@@ -465,7 +465,24 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!tbody) return;
     tbody.innerHTML = "";
 
-    var list = (users && users.length > 0) ? users.slice(0, 5) : [];
+    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    var list = [];
+
+    if (isUserAdmin) {
+      list = (users && users.length > 0) ? users.slice(0, 5) : [];
+    } else {
+      var filtered = (users || []).filter(function (u) {
+        return currentUser && (u.email === currentUser.email || (currentUser.id && u.id === currentUser.id));
+      });
+      if (filtered.length === 0 && currentUser) {
+        filtered = [{
+          username: currentUser.username,
+          email: currentUser.email
+        }];
+      }
+      list = filtered;
+    }
+
     list.forEach(function (u) {
       var tr = document.createElement("tr");
       var displayName = u.username || (u.email ? u.email.split("@")[0] : "Kullanıcı");
@@ -487,6 +504,15 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!tbody) return;
     tbody.innerHTML = "";
 
+    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    if (!isUserAdmin) {
+      if (emptyEl) {
+        emptyEl.style.display = "block";
+        emptyEl.classList.add("visible");
+      }
+      return;
+    }
+
     if (!users || users.length === 0) {
       if (emptyEl) {
         emptyEl.style.display = "block";
@@ -505,7 +531,7 @@ document.addEventListener("DOMContentLoaded", function () {
       var displayName = user.username || (userEmail ? userEmail.split("@")[0] : "Kullanıcı");
       var letter = displayName.trim().charAt(0).toUpperCase();
       var isSelf = currentUser && (currentUser.email === userEmail || currentUser.id === user.id);
-      var isUserAdmin = isAdmin(userEmail) || user.role === "admin";
+      var isCurrentAdmin = isAdmin(userEmail) || user.role === "admin";
 
       var td1 = document.createElement("td");
       td1.innerHTML = '<div class="table-user-cell"><div class="table-avatar">' + letter + '</div><span>' + displayName + '</span></div>';
@@ -515,8 +541,8 @@ document.addEventListener("DOMContentLoaded", function () {
       td2.innerText = userEmail;
 
       var td3 = document.createElement("td");
-      var roleText = isUserAdmin ? "Yönetici" : "Kullanıcı";
-      var roleClass = isUserAdmin ? "role-admin" : "role-user";
+      var roleText = isCurrentAdmin ? "Yönetici" : "Kullanıcı";
+      var roleClass = isCurrentAdmin ? "role-admin" : "role-user";
       td3.innerHTML = '<span class="role-badge ' + roleClass + '">' + roleText + '</span>';
 
       var td4 = document.createElement("td");
@@ -559,6 +585,13 @@ document.addEventListener("DOMContentLoaded", function () {
   function renderDatabaseView(users) {
     var output = document.getElementById("db-output");
     if (!output) return;
+
+    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    if (!isUserAdmin) {
+      output.innerText = "[]";
+      return;
+    }
+
     var q = "";
     var search = document.getElementById("db-search");
     if (search) q = search.value.trim().toLowerCase();
@@ -791,8 +824,9 @@ document.addEventListener("DOMContentLoaded", function () {
         populateSettings();
       } else if (tabId === "tab-overview") {
         renderRecentUsers(cachedUsers);
+        var isUserAdmin = currentUser && isAdmin(currentUser.email);
         var statUsers = document.getElementById("stat-users");
-        if (statUsers) statUsers.innerText = cachedUsers.length;
+        if (statUsers) statUsers.innerText = isUserAdmin ? cachedUsers.length : 1;
         await refreshDashboardData();
       }
     });
@@ -801,13 +835,14 @@ document.addEventListener("DOMContentLoaded", function () {
   async function refreshDashboardData() {
     try {
       var users = await cloudFetchUsers();
+      var isUserAdmin = currentUser && isAdmin(currentUser.email);
       var statUsers = document.getElementById("stat-users");
-      if (statUsers) statUsers.innerText = users.length;
+      if (statUsers) statUsers.innerText = isUserAdmin ? users.length : 1;
       renderRecentUsers(users);
       renderUsersTable(users);
       renderDatabaseView(users);
       renderLogs();
-      addLog("Bulut sunucusundan kullanıcı verileri başarıyla çekildi (" + users.length + " kayıt)");
+      addLog("Bulut sunucusundan kullanıcı verileri başarıyla çekildi (" + (isUserAdmin ? users.length : 1) + " kayıt)");
     } catch (err) {
       addLog("Bulut veri senkronizasyon uyarısı: " + (err.message || err));
     }
