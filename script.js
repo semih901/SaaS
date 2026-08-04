@@ -254,12 +254,12 @@ document.addEventListener("DOMContentLoaded", function () {
       throw new Error("Supabase bağlantısı kurulamadı.");
     }
     var t0 = performance.now();
-    var captchaToken = hcaptcha.getResponse();
-    
     var signUpOptions = {
-      data: { username: username },
-      captchaToken: captchaToken 
+      data: { username: username }
     };
+    if (captchaToken) {
+      signUpOptions.captchaToken = captchaToken;
+    }
     var res = await client.auth.signUp({
       email: email,
       password: password,
