@@ -7,8 +7,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
   if (window.supabase && SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey) {
     try {
-      var projectUrl = SUPABASE_CONFIG.url.replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
-      sbClient = window.supabase.createClient(projectUrl, SUPABASE_CONFIG.anonKey);
+      sbClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
     } catch (e) {
       sbClient = null;
     }
