@@ -1,5 +1,5 @@
 const SUPABASE_CONFIG = {
-  url: "https://uwpytmtkdejwzxepimjh.supabase.co/rest/v1/",
+  url: "https://uwpytmtkdejwzxepimjh.supabase.co",
   anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3cHl0bXRrZGVqd3p4ZXBpbWpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4MzgwODEsImV4cCI6MjEwMTQxNDA4MX0.R48W94A-ut7OklGsxDoNxpqpvdfQA1zjjXiRt5qcM_w"
 };
 
@@ -7,7 +7,8 @@ document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
   if (window.supabase && SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey) {
     try {
-      sbClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+      var projectUrl = SUPABASE_CONFIG.url.replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
+      sbClient = window.supabase.createClient(projectUrl, SUPABASE_CONFIG.anonKey);
     } catch (e) {
       sbClient = null;
     }
