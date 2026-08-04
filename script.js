@@ -95,6 +95,28 @@ document.addEventListener("DOMContentLoaded", function () {
   updateFluctuatingMetrics();
   metricsInterval = setInterval(updateFluctuatingMetrics, 3000);
 
+  function getCaptchaResponse(formEl) {
+    if (typeof hcaptcha !== "undefined") {
+      var tokenInput = formEl ? formEl.querySelector('[name="h-captcha-response"]') : null;
+      if (tokenInput && tokenInput.value) {
+        return tokenInput.value;
+      }
+      try {
+        var token = hcaptcha.getResponse();
+        if (token) return token;
+      } catch (e) {}
+    }
+    return "";
+  }
+
+  function resetCaptcha() {
+    if (typeof hcaptcha !== "undefined") {
+      try {
+        hcaptcha.reset();
+      } catch (e) {}
+    }
+  }
+
   function applyRolePermissions() {
     var isUserAdmin = currentUser && isAdmin(currentUser.email);
     var usersTabBtn = document.querySelector('.sidebar-item[data-tab="tab-users"]');
@@ -226,18 +248,22 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
-  async function cloudSignUp(username, email, password) {
+  async function cloudSignUp(username, email, password, captchaToken) {
     var client = getSupabaseClient();
     if (!client) {
       throw new Error("Supabase bağlantısı kurulamadı.");
     }
     var t0 = performance.now();
+    var signUpOptions = {
+      data: { username: username }
+    };
+    if (captchaToken) {
+      signUpOptions.captchaToken = captchaToken;
+    }
     var res = await client.auth.signUp({
       email: email,
       password: password,
-      options: {
-        data: { username: username }
-      }
+      options: signUpOptions
     });
     if (res.error) throw res.error;
 
@@ -267,15 +293,20 @@ document.addEventListener("DOMContentLoaded", function () {
     return res.data;
   }
 
-  async function cloudSignIn(email, password) {
+  async function cloudSignIn(email, password, captchaToken) {
     var client = getSupabaseClient();
     if (!client) {
       throw new Error("Supabase bağlantısı kurulamadı.");
     }
     var t0 = performance.now();
+    var signInOptions = {};
+    if (captchaToken) {
+      signInOptions.captchaToken = captchaToken;
+    }
     var res = await client.auth.signInWithPassword({
       email: email,
-      password: password
+      password: password,
+      options: signInOptions
     });
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
@@ -389,16 +420,23 @@ document.addEventListener("DOMContentLoaded", function () {
         return;
       }
 
+      var captchaToken = getCaptchaResponse(registerForm);
+      if (!captchaToken) {
+        showAlert("register-alert", "Lütfen robot olmadığınızı doğrulayın!", "error");
+        return;
+      }
+
       if (btn) {
         btn.disabled = true;
         btn.innerText = "Buluta Kaydediliyor...";
       }
 
       try {
-        await cloudSignUp(uname, email, pass);
+        await cloudSignUp(uname, email, pass, captchaToken);
         addLog("Yeni kullanıcı bulut sunucusuna kaydoldu (" + email + ")");
         showAlert("register-alert", "Kayıt başarılı! Giriş ekranına yönlendiriliyorsunuz...", "success");
         registerForm.reset();
+        resetCaptcha();
         setTimeout(function () {
           hideAlert("register-alert");
           showView("login");
@@ -406,6 +444,7 @@ document.addEventListener("DOMContentLoaded", function () {
           if (loginEmail) loginEmail.value = email;
         }, 1200);
       } catch (err) {
+        resetCaptcha();
         showAlert("register-alert", err.message || "Kayıt başarısız oldu.", "error");
       } finally {
         if (btn) {
@@ -430,13 +469,19 @@ document.addEventListener("DOMContentLoaded", function () {
         return;
       }
 
+      var captchaToken = getCaptchaResponse(loginForm);
+      if (!captchaToken) {
+        showAlert("login-alert", "Lütfen robot olmadığınızı doğrulayın!", "error");
+        return;
+      }
+
       if (btn) {
         btn.disabled = true;
         btn.innerText = "Bulut Oturumu Doğrulanıyor...";
       }
 
       try {
-        var data = await cloudSignIn(email, pass);
+        var data = await cloudSignIn(email, pass, captchaToken);
         var u = data.user;
         var metaName = (u && u.user_metadata && u.user_metadata.username) || email.split("@")[0];
         currentUser = {
@@ -448,8 +493,10 @@ document.addEventListener("DOMContentLoaded", function () {
         var roleLabel = isAdmin(currentUser.email) ? "Yönetici (Admin)" : "Standart Kullanıcı";
         addLog(currentUser.username + " bulut oturumu doğrulandı — Yetki: " + roleLabel);
         loginForm.reset();
+        resetCaptcha();
         showView("dashboard");
       } catch (err) {
+        resetCaptcha();
         showAlert("login-alert", err.message || "Giriş başarısız. Lütfen bilgilerinizi kontrol edin.", "error");
       } finally {
         if (btn) {
