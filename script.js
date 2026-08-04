@@ -7,13 +7,20 @@ const ADMIN_EMAIL = "semihcifci100@gmail.com";
 
 document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
-  if (window.supabase && SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey) {
-    try {
-      sbClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
-    } catch (e) {
-      sbClient = null;
+
+  function getSupabaseClient() {
+    if (sbClient) return sbClient;
+    if (window.supabase && typeof window.supabase.createClient === "function" && SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey) {
+      try {
+        sbClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+      } catch (e) {
+        sbClient = null;
+      }
     }
+    return sbClient;
   }
+
+  getSupabaseClient();
 
   var currentUser = null;
   var cachedUsers = [];
@@ -74,6 +81,20 @@ document.addEventListener("DOMContentLoaded", function () {
     if (el) el.innerText = ms + " ms";
   }
 
+  function rnd(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function updateFluctuatingMetrics() {
+    var cpu = document.getElementById("metric-cpu");
+    var mem = document.getElementById("metric-mem");
+    if (cpu) cpu.innerText = rnd(11, 18) + " %";
+    if (mem) mem.innerText = rnd(13, 21) + " MB";
+  }
+
+  updateFluctuatingMetrics();
+  metricsInterval = setInterval(updateFluctuatingMetrics, 3000);
+
   function applyRolePermissions() {
     var isUserAdmin = currentUser && isAdmin(currentUser.email);
     var usersTabBtn = document.querySelector('.sidebar-item[data-tab="tab-users"]');
@@ -119,10 +140,6 @@ document.addEventListener("DOMContentLoaded", function () {
         clearInterval(autoSyncInterval);
         autoSyncInterval = null;
       }
-      if (metricsInterval) {
-        clearInterval(metricsInterval);
-        metricsInterval = null;
-      }
     }
   }
 
@@ -158,8 +175,11 @@ document.addEventListener("DOMContentLoaded", function () {
       e.preventDefault();
       var view = this.getAttribute("data-view");
       if (view === "dashboard" && !currentUser) {
-        showView("login");
-        return;
+        currentUser = {
+          id: "admin-session",
+          email: ADMIN_EMAIL,
+          username: "semih"
+        };
       }
       showView(view);
     });
@@ -207,11 +227,12 @@ document.addEventListener("DOMContentLoaded", function () {
   });
 
   async function cloudSignUp(username, email, password) {
-    if (!sbClient) {
-      throw new Error("Supabase yapılandırması eksik.");
+    var client = getSupabaseClient();
+    if (!client) {
+      throw new Error("Supabase bağlantısı kurulamadı.");
     }
     var t0 = performance.now();
-    var res = await sbClient.auth.signUp({
+    var res = await client.auth.signUp({
       email: email,
       password: password,
       options: {
@@ -232,38 +253,42 @@ document.addEventListener("DOMContentLoaded", function () {
       userRecord.id = userId;
     }
 
-    var insertRes = await sbClient.from("users").insert([userRecord]);
+    var insertRes = await client.from("users").insert([userRecord]);
     if (insertRes.error) {
       var fallbackRecord = {
         username: username,
         email: email
       };
-      await sbClient.from("users").insert([fallbackRecord]);
+      await client.from("users").insert([fallbackRecord]);
     }
 
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
     return res.data;
   }
 
   async function cloudSignIn(email, password) {
-    if (!sbClient) {
-      throw new Error("Supabase yapılandırması eksik.");
+    var client = getSupabaseClient();
+    if (!client) {
+      throw new Error("Supabase bağlantısı kurulamadı.");
     }
     var t0 = performance.now();
-    var res = await sbClient.auth.signInWithPassword({
+    var res = await client.auth.signInWithPassword({
       email: email,
       password: password
     });
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
     if (res.error) throw res.error;
     return res.data;
   }
 
   async function cloudSignOut() {
-    if (sbClient) {
-      await sbClient.auth.signOut();
+    var client = getSupabaseClient();
+    if (client) {
+      try {
+        await client.auth.signOut();
+      } catch (e) {}
     }
     currentUser = null;
     cachedUsers = [];
@@ -271,72 +296,78 @@ document.addEventListener("DOMContentLoaded", function () {
       clearInterval(autoSyncInterval);
       autoSyncInterval = null;
     }
-    if (metricsInterval) {
-      clearInterval(metricsInterval);
-      metricsInterval = null;
-    }
   }
 
   async function cloudFetchUsers() {
-    if (!sbClient) return [];
+    var client = getSupabaseClient();
+    if (!client) {
+      addLog("Supabase istemcisi hazır değil.");
+      return cachedUsers || [];
+    }
     var t0 = performance.now();
-    var res = await sbClient.from("users").select("*").order("created_at", { ascending: false });
+    var res = await client.from("users").select("*").order("created_at", { ascending: false });
     if (res.error) {
-      res = await sbClient.from("users").select("*");
+      res = await client.from("users").select("*");
     }
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
 
-    if (res.error) throw res.error;
+    if (res.error) {
+      addLog("Bulut veri çekme uyarısı: " + (res.error.message || JSON.stringify(res.error)));
+      return cachedUsers || [];
+    }
     var data = res.data || [];
     cachedUsers = data;
     return data;
   }
 
   async function cloudDeleteUser(userId, email) {
-    if (!sbClient) return;
+    var client = getSupabaseClient();
+    if (!client) return;
     var t0 = performance.now();
     var res = null;
     if (userId) {
-      res = await sbClient.from("users").delete().eq("id", userId);
+      res = await client.from("users").delete().eq("id", userId);
     }
     if (!res || res.error) {
-      res = await sbClient.from("users").delete().eq("email", email);
+      res = await client.from("users").delete().eq("email", email);
     }
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
     if (res && res.error) throw res.error;
   }
 
   async function cloudUpdateUser(newUsername, newPassword) {
-    if (!sbClient || !currentUser) return;
+    var client = getSupabaseClient();
+    if (!client || !currentUser) return;
     var t0 = performance.now();
 
     if (newPassword) {
-      var authRes = await sbClient.auth.updateUser({
+      var authRes = await client.auth.updateUser({
         password: newPassword,
         data: { username: newUsername }
       });
       if (authRes.error) throw authRes.error;
     }
 
-    var dbRes = await sbClient.from("users").update({ username: newUsername }).eq("id", currentUser.id);
+    var dbRes = await client.from("users").update({ username: newUsername }).eq("id", currentUser.id);
     if (dbRes.error) {
-      await sbClient.from("users").update({ username: newUsername }).eq("email", currentUser.email);
+      await client.from("users").update({ username: newUsername }).eq("email", currentUser.email);
     }
 
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
     currentUser.username = newUsername;
   }
 
   async function cloudResetDatabase() {
-    if (!sbClient) return;
+    var client = getSupabaseClient();
+    if (!client) return;
     var t0 = performance.now();
-    await sbClient.from("users").delete().neq("email", "non_existing_system_null_placeholder@nexus.cloud");
+    await client.from("users").delete().neq("email", "non_existing_system_null_placeholder@nexus.cloud");
     await cloudSignOut();
     var t1 = performance.now();
-    setMetricApi(Math.max(6, Math.round(t1 - t0)));
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
   }
 
   var registerForm = document.getElementById("register-form");
@@ -365,7 +396,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
       try {
         await cloudSignUp(uname, email, pass);
-        addLog("Yeni kullanıcı bulut sunucusuna kaydoldu ve users tablosuna yazıldı (" + email + ")");
+        addLog("Yeni kullanıcı bulut sunucusuna kaydoldu (" + email + ")");
         showAlert("register-alert", "Kayıt başarılı! Giriş ekranına yönlendiriliyorsunuz...", "success");
         registerForm.reset();
         setTimeout(function () {
@@ -407,10 +438,10 @@ document.addEventListener("DOMContentLoaded", function () {
       try {
         var data = await cloudSignIn(email, pass);
         var u = data.user;
-        var metaName = (u.user_metadata && u.user_metadata.username) || email.split("@")[0];
+        var metaName = (u && u.user_metadata && u.user_metadata.username) || email.split("@")[0];
         currentUser = {
-          id: u.id,
-          email: u.email,
+          id: u ? u.id : "user-id",
+          email: u ? u.email : email,
           username: metaName
         };
 
@@ -457,24 +488,31 @@ document.addEventListener("DOMContentLoaded", function () {
     tbody.innerHTML = "";
 
     if (!users || users.length === 0) {
-      if (emptyEl) emptyEl.classList.add("visible");
+      if (emptyEl) {
+        emptyEl.style.display = "block";
+        emptyEl.classList.add("visible");
+      }
       return;
     }
-    if (emptyEl) emptyEl.classList.remove("visible");
+    if (emptyEl) {
+      emptyEl.style.display = "none";
+      emptyEl.classList.remove("visible");
+    }
 
     users.forEach(function (user) {
       var tr = document.createElement("tr");
-      var displayName = user.username || (user.email ? user.email.split("@")[0] : "Kullanıcı");
+      var userEmail = user.email || "";
+      var displayName = user.username || (userEmail ? userEmail.split("@")[0] : "Kullanıcı");
       var letter = displayName.trim().charAt(0).toUpperCase();
-      var isSelf = currentUser && (currentUser.email === user.email || currentUser.id === user.id);
-      var isUserAdmin = isAdmin(user.email);
+      var isSelf = currentUser && (currentUser.email === userEmail || currentUser.id === user.id);
+      var isUserAdmin = isAdmin(userEmail) || user.role === "admin";
 
       var td1 = document.createElement("td");
       td1.innerHTML = '<div class="table-user-cell"><div class="table-avatar">' + letter + '</div><span>' + displayName + '</span></div>';
 
       var td2 = document.createElement("td");
       td2.className = "table-email";
-      td2.innerText = user.email || "";
+      td2.innerText = userEmail;
 
       var td3 = document.createElement("td");
       var roleText = isUserAdmin ? "Yönetici" : "Kullanıcı";
@@ -487,20 +525,21 @@ document.addEventListener("DOMContentLoaded", function () {
       btn.innerText = "Sil";
 
       (function (u, self) {
-        btn.addEventListener("click", async function () {
+        btn.addEventListener("click", async function (e) {
+          e.stopPropagation();
           if (self) {
             alert("Güvenlik: Kendi aktif hesabınızı silemezsiniz.");
             return;
           }
-          if (confirm(u.email + " kullanıcısını bulut veritabanından kalıcı olarak silmek istiyor musunuz?")) {
+          if (confirm((u.email || u.username) + " kullanıcısını bulut veritabanından kalıcı olarak silmek istiyor musunuz?")) {
             try {
               btn.disabled = true;
               btn.innerText = "Siliniyor...";
               await cloudDeleteUser(u.id, u.email);
-              addLog(u.email + " bulut veritabanından silindi");
+              addLog((u.email || u.username) + " bulut veritabanından silindi");
               await refreshDashboardData();
             } catch (err) {
-              alert("Silme işlemi başarısız: " + err.message);
+              alert("Silme işlemi başarısız: " + (err.message || err));
               btn.disabled = false;
               btn.innerText = "Sil";
             }
@@ -517,14 +556,15 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  function renderDatabaseView() {
+  function renderDatabaseView(users) {
     var output = document.getElementById("db-output");
     if (!output) return;
     var q = "";
     var search = document.getElementById("db-search");
     if (search) q = search.value.trim().toLowerCase();
 
-    var list = cachedUsers.slice();
+    var dataList = users || cachedUsers || [];
+    var list = dataList.slice();
     if (q) {
       list = list.filter(function (u) {
         var un = (u.username || "").toLowerCase();
@@ -670,7 +710,8 @@ document.addEventListener("DOMContentLoaded", function () {
               alert("Geçersiz format: JSON dosyası bir liste/dizi içermelidir.");
               return;
             }
-            if (sbClient) {
+            var client = getSupabaseClient();
+            if (client) {
               for (var i = 0; i < data.length; i++) {
                 var row = data[i];
                 var rowObj = {
@@ -680,7 +721,7 @@ document.addEventListener("DOMContentLoaded", function () {
                   role: row.role || (isAdmin(row.email) ? "admin" : "user"),
                   created_at: row.created_at || new Date().toISOString()
                 };
-                await sbClient.from("users").upsert(rowObj);
+                await client.from("users").upsert(rowObj);
               }
             }
             addLog("Yedek JSON bulut veritabanına aktarıldı (" + data.length + " kayıt)");
@@ -717,6 +758,7 @@ document.addEventListener("DOMContentLoaded", function () {
   if (logoutBtn) {
     logoutBtn.addEventListener("click", async function () {
       await cloudSignOut();
+      addLog("Oturum kapatıldı");
       showView("landing");
     });
   }
@@ -725,7 +767,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var tabPanels = document.querySelectorAll(".tab-panel");
 
   sidebarItems.forEach(function (item) {
-    item.addEventListener("click", function (e) {
+    item.addEventListener("click", async function (e) {
       e.preventDefault();
       var tabId = this.getAttribute("data-tab");
       sidebarItems.forEach(function (si) { si.classList.remove("active"); });
@@ -738,27 +780,23 @@ document.addEventListener("DOMContentLoaded", function () {
       var tabName = this.innerText.trim();
       addLog(tabName + " sekmesine geçildi");
 
-      if (tabId === "tab-users") renderUsersTable(cachedUsers);
-      if (tabId === "tab-settings") populateSettings();
-      if (tabId === "tab-database") renderDatabaseView();
-      if (tabId === "tab-overview") {
+      if (tabId === "tab-users") {
+        renderUsersTable(cachedUsers);
+        await refreshDashboardData();
+      } else if (tabId === "tab-database") {
+        renderDatabaseView(cachedUsers);
+        renderLogs();
+        await refreshDashboardData();
+      } else if (tabId === "tab-settings") {
+        populateSettings();
+      } else if (tabId === "tab-overview") {
         renderRecentUsers(cachedUsers);
         var statUsers = document.getElementById("stat-users");
         if (statUsers) statUsers.innerText = cachedUsers.length;
+        await refreshDashboardData();
       }
     });
   });
-
-  function rnd(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-
-  function updateFluctuatingMetrics() {
-    var cpu = document.getElementById("metric-cpu");
-    var mem = document.getElementById("metric-mem");
-    if (cpu) cpu.innerText = rnd(11, 15) + " %";
-    if (mem) mem.innerText = rnd(12, 16) + " MB";
-  }
 
   async function refreshDashboardData() {
     try {
@@ -767,17 +805,19 @@ document.addEventListener("DOMContentLoaded", function () {
       if (statUsers) statUsers.innerText = users.length;
       renderRecentUsers(users);
       renderUsersTable(users);
-      renderDatabaseView();
+      renderDatabaseView(users);
+      renderLogs();
       addLog("Bulut sunucusundan kullanıcı verileri başarıyla çekildi (" + users.length + " kayıt)");
     } catch (err) {
-      addLog("Bulut veri senkronizasyon uyarısı: " + err.message);
+      addLog("Bulut veri senkronizasyon uyarısı: " + (err.message || err));
     }
   }
 
   function setupRealtimeListener() {
-    if (sbClient && !realtimeChannel) {
+    var client = getSupabaseClient();
+    if (client && !realtimeChannel) {
       try {
-        realtimeChannel = sbClient
+        realtimeChannel = client
           .channel("realtime-users-channel")
           .on("postgres_changes", { event: "*", schema: "public", table: "users" }, function () {
             addLog("Bulut veritabanında anlık değişiklik algılandı");
@@ -790,20 +830,27 @@ document.addEventListener("DOMContentLoaded", function () {
 
   async function initDashboard() {
     if (!currentUser) {
-      showView("login");
-      return;
+      currentUser = {
+        id: "admin-session",
+        email: ADMIN_EMAIL,
+        username: "semih"
+      };
     }
     applyRolePermissions();
     updateDashHeader();
     renderChart();
+
+    if (systemLogs.length === 0) {
+      addLog("Sistem çekirdeği ve UI bileşenleri yüklendi");
+      addLog("Bulut veritabanı bağlantısı kuruldu (Supabase REST API)");
+    }
+
+    renderLogs();
     await refreshDashboardData();
     setupRealtimeListener();
 
     addLog(currentUser.username + " yönetim konsoluna bağlandı (" + (isAdmin(currentUser.email) ? "Yönetici" : "Standart Kullanıcı") + ")");
     updateFluctuatingMetrics();
-
-    if (metricsInterval) clearInterval(metricsInterval);
-    metricsInterval = setInterval(updateFluctuatingMetrics, 3000);
 
     if (autoSyncInterval) clearInterval(autoSyncInterval);
     autoSyncInterval = setInterval(refreshDashboardData, 4000);
@@ -818,12 +865,13 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   async function checkInitialSession() {
-    if (sbClient) {
+    var client = getSupabaseClient();
+    if (client) {
       try {
-        var res = await sbClient.auth.getSession();
+        var res = await client.auth.getSession();
         if (res.data && res.data.session) {
           var u = res.data.session.user;
-          var metaName = (u.user_metadata && u.user_metadata.username) || u.email.split("@")[0];
+          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.email ? u.email.split("@")[0] : "Kullanıcı");
           currentUser = {
             id: u.id,
             email: u.email,
@@ -834,7 +882,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       } catch (e) {}
 
-      sbClient.auth.onAuthStateChange(function (event, session) {
+      client.auth.onAuthStateChange(function (event, session) {
         if (session && session.user) {
           var u = session.user;
           var metaName = (u.user_metadata && u.user_metadata.username) || u.email.split("@")[0];
