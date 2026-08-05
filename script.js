@@ -31,6 +31,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var realtimeChannel = null;
   var snippetsRealtimeChannel = null;
   var notifsRealtimeChannel = null;
+  var upvotesRealtimeChannel = null;
   var activeExpertiseFilter = "all";
   var isRefreshingData = false;
 
@@ -523,7 +524,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var notifClearBtn = document.getElementById("notif-clear-btn");
 
   if (notifTriggerBtn && notifDropdownMenu) {
-    notifTriggerBtn.addEventListener("click", function (e) {
+    notifTriggerBtn.addEventListener("click", async function (e) {
       e.stopPropagation();
       if (navDropdownMenu) {
         navDropdownMenu.classList.remove("show");
@@ -536,6 +537,8 @@ document.addEventListener("DOMContentLoaded", function () {
       } else {
         notifDropdownMenu.classList.add("show", "active");
         notifTriggerBtn.classList.add("active");
+        await fetchNotifications();
+        await markAllNotificationsAsRead();
       }
     });
 
@@ -885,11 +888,24 @@ document.addEventListener("DOMContentLoaded", function () {
       upvotes: 0,
       created_at: new Date().toISOString()
     };
-    var res = await client.from("snippets").insert([record]);
+    var res = await client.from("snippets").insert([record]).select();
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
     if (res.error) throw res.error;
     addLog("Yeni kod parcacigi eklendi: " + title + " [" + language + " / " + expertiseArea + "]");
+
+    var newId = (res.data && res.data[0] ? res.data[0].id : null);
+    if (isPublic) {
+      sendNotification({
+        user_id: null,
+        actor_id: currentUser.id,
+        actor_name: authorName,
+        snippet_id: newId,
+        snippet_title: title,
+        type: "new_snippet",
+        message: title + " paylasildi"
+      });
+    }
     return res.data;
   }
 
@@ -1251,6 +1267,7 @@ document.addEventListener("DOMContentLoaded", function () {
     var client = getSupabaseClient();
     var payload = {
       user_id: notifData.user_id || null,
+      actor_id: notifData.actor_id || (currentUser ? currentUser.id : null),
       actor_name: notifData.actor_name || (currentUser ? currentUser.username : "Bir gelistirici"),
       snippet_id: notifData.snippet_id || null,
       snippet_title: notifData.snippet_title || "",
@@ -1262,7 +1279,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
     if (client) {
       try {
-        await client.from("notifications").insert([payload]);
+        var res = await client.from("notifications").insert([payload]);
+        if (res && res.error) {
+          var fallbackPayload = Object.assign({}, payload);
+          delete fallbackPayload.actor_id;
+          await client.from("notifications").insert([fallbackPayload]);
+        }
       } catch (e) {}
     }
   }
@@ -1420,6 +1442,12 @@ document.addEventListener("DOMContentLoaded", function () {
       var current = (res && res.data && typeof res.data.upvotes === "number") ? res.data.upvotes : 0;
       await client.from("snippets").update({ upvotes: current + 1 }).eq("id", snippetId);
     } catch (e) {}
+
+    if (currentUser && currentUser.id && currentUser.id !== "guest-session") {
+      try {
+        await client.from("upvotes").insert([{ user_id: currentUser.id, snippet_id: snippetId }]);
+      } catch (e) {}
+    }
   }
 
   async function decrementUpvote(snippetId) {
@@ -1431,6 +1459,12 @@ document.addEventListener("DOMContentLoaded", function () {
       var nextVotes = Math.max(0, current - 1);
       await client.from("snippets").update({ upvotes: nextVotes }).eq("id", snippetId);
     } catch (e) {}
+
+    if (currentUser && currentUser.id && currentUser.id !== "guest-session") {
+      try {
+        await client.from("upvotes").delete().eq("user_id", currentUser.id).eq("snippet_id", snippetId);
+      } catch (e) {}
+    }
   }
 
   function isTrending(snippet) {
@@ -1623,10 +1657,11 @@ document.addEventListener("DOMContentLoaded", function () {
             if (authorUserId && currentUser && String(authorUserId) !== String(currentUser.id)) {
               sendNotification({
                 user_id: authorUserId,
-                type: "like",
+                actor_id: currentUser.id,
                 actor_name: currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Bir kullanici"),
                 snippet_id: snipObj.id,
                 snippet_title: snipObj.title || "Kod parcacigi",
+                type: "like",
                 message: (currentUser.username || "Bir kullanici") + " gonderinizi begendi"
               });
             }
@@ -3081,6 +3116,30 @@ document.addEventListener("DOMContentLoaded", function () {
               cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== String(delId); });
               renderSnippetsFeed(cachedSnippets);
               updateSnippetCount();
+            }
+          })
+          .subscribe();
+      } catch (e) {}
+    }
+
+    if (client && !upvotesRealtimeChannel) {
+      try {
+        upvotesRealtimeChannel = client
+          .channel("realtime-upvotes-channel")
+          .on("postgres_changes", { event: "*", schema: "public", table: "upvotes" }, async function (payload) {
+            addLog("Bulut veritabaninda anlik begeni degisikligi algilandi (upvotes)");
+            var targetSnippetId = (payload && payload.new && payload.new.snippet_id) || (payload && payload.old && payload.old.snippet_id);
+            if (targetSnippetId) {
+              try {
+                var sRes = await client.from("snippets").select("upvotes").eq("id", targetSnippetId).maybeSingle();
+                if (sRes && sRes.data && typeof sRes.data.upvotes === "number") {
+                  var vCount = sRes.data.upvotes;
+                  var sIdx = cachedSnippets.findIndex(function (s) { return String(s.id) === String(targetSnippetId); });
+                  if (sIdx !== -1) cachedSnippets[sIdx].upvotes = vCount;
+                  var numEls = document.querySelectorAll('.snippet-upvote-btn[data-snippet-id="' + targetSnippetId + '"] .upvote-num');
+                  numEls.forEach(function (el) { el.innerText = vCount; });
+                }
+              } catch (e) {}
             }
           })
           .subscribe();
