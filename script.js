@@ -18,43 +18,6 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     }
     return sbClient;
-
-      // --- GİTHUB İLE GİRİŞ KODU ---
-  // HTML sayfanızdaki GitHub butonunu ID'si ile yakalıyoruz
-  var githubBtn = document.getElementById("github-login-btn");
-
-  if (githubBtn) {
-    githubBtn.addEventListener("click", async function (e) {
-      e.preventDefault();
-      addLog("GitHub ile giriş işlemi başlatılıyor...");
-
-      var client = getSupabaseClient();
-      if (!client) {
-        addLog("Hata: Supabase istemcisi başlatılamadı.");
-        alert("Supabase bağlantısı kurulamadı. Ayarlarınızı kontrol edin.");
-        return;
-      }
-
-      
-      const { data, error } = await client.auth.signInWithOAuth({
-        provider: 'github',
-        options: {
-          
-          redirectTo: window.location.origin 
-        }
-      });
-
-      if (error) {
-        addLog("GitHub Giriş Hatası: " + error.message);
-        alert("Giriş başarısız: " + error.message);
-      } else if (data && data.url) {
-        addLog("GitHub'a yönlendiriliyorsunuz...");
-        
-        window.location.href = data.url;
-      }
-    });
-  }
-
   }
 
   getSupabaseClient();
@@ -122,7 +85,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function escapeHtml(str) {
     if (!str) return "";
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   function addLog(msg) {
@@ -284,9 +247,12 @@ document.addEventListener("DOMContentLoaded", function () {
     var navAvatar = document.getElementById("nav-avatar");
     var isUserAdmin = isAdmin(currentUser.email);
     var roleBadgeText = isUserAdmin ? " (Yonetici)" : " (Kullanici)";
-    var displayName = (currentUser.username || currentUser.email || "Kullanici") + roleBadgeText;
+    var displayName = (currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Kullanici")) + roleBadgeText;
     if (navUsername) navUsername.innerText = displayName;
-    if (navAvatar) navAvatar.innerText = (currentUser.username || currentUser.email || "K").trim().charAt(0).toUpperCase();
+    if (navAvatar) {
+      var letter = (currentUser.username || currentUser.email || "K").trim().charAt(0).toUpperCase();
+      navAvatar.innerText = letter;
+    }
   }
 
   document.querySelectorAll("[data-view]").forEach(function (el) {
@@ -297,7 +263,9 @@ document.addEventListener("DOMContentLoaded", function () {
         currentUser = {
           id: "admin-session",
           email: ADMIN_EMAIL,
-          username: "semih"
+          username: "semih",
+          avatar_url: "",
+          bio: ""
         };
       }
       showView(view);
@@ -370,6 +338,8 @@ document.addEventListener("DOMContentLoaded", function () {
       username: username,
       email: email,
       role: userRole,
+      bio: "",
+      avatar_url: "",
       created_at: new Date().toISOString()
     };
     if (userId) {
@@ -466,27 +436,54 @@ document.addEventListener("DOMContentLoaded", function () {
     if (res && res.error) throw res.error;
   }
 
-  async function cloudUpdateUser(newUsername, newPassword) {
+  async function updateUserProfile(newUsername, newAvatarUrl, newBio) {
     var client = getSupabaseClient();
-    if (!client || !currentUser) return;
+    if (!client || !currentUser) {
+      throw new Error("Supabase baglantisi veya aktif oturum bulunamadi.");
+    }
     var t0 = performance.now();
 
-    if (newPassword) {
-      var authRes = await client.auth.updateUser({
-        password: newPassword,
-        data: { username: newUsername }
+    try {
+      await client.auth.updateUser({
+        data: {
+          username: newUsername,
+          avatar_url: newAvatarUrl,
+          bio: newBio
+        }
       });
-      if (authRes.error) throw authRes.error;
+    } catch (e) {}
+
+    var upsertPayload = {
+      id: currentUser.id,
+      email: currentUser.email,
+      username: newUsername,
+      avatar_url: newAvatarUrl,
+      bio: newBio
+    };
+
+    var dbRes = await client.from("users").upsert(upsertPayload, { onConflict: "id" });
+    if (dbRes.error) {
+      var updateRes = await client.from("users").update({
+        username: newUsername,
+        avatar_url: newAvatarUrl,
+        bio: newBio
+      }).eq("id", currentUser.id);
+
+      if (updateRes.error) {
+        await client.from("users").update({
+          username: newUsername,
+          avatar_url: newAvatarUrl,
+          bio: newBio
+        }).eq("email", currentUser.email);
+      }
     }
 
-    var dbRes = await client.from("users").update({ username: newUsername }).eq("id", currentUser.id);
-    if (dbRes.error) {
-      await client.from("users").update({ username: newUsername }).eq("email", currentUser.email);
-    }
+    currentUser.username = newUsername;
+    currentUser.avatar_url = newAvatarUrl;
+    currentUser.bio = newBio;
 
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
-    currentUser.username = newUsername;
   }
 
   async function cloudResetDatabase() {
@@ -532,12 +529,31 @@ document.addEventListener("DOMContentLoaded", function () {
       return cachedSnippets || [];
     }
     var t0 = performance.now();
-    var res = await client.from("snippets").select("*, users(username, email)").eq("is_public", true).order("created_at", { ascending: false });
+    var res = await client
+      .from("snippets")
+      .select("*, users:user_id(username, avatar_url, bio)")
+      .eq("is_public", true)
+      .order("created_at", { ascending: false });
+
     if (res.error) {
-      res = await client.from("snippets").select("*").eq("is_public", true).order("created_at", { ascending: false });
+      res = await client
+        .from("snippets")
+        .select("*, users(username, avatar_url, bio)")
+        .eq("is_public", true)
+        .order("created_at", { ascending: false });
     }
     if (res.error) {
-      res = await client.from("snippets").select("*").eq("is_public", true);
+      res = await client
+        .from("snippets")
+        .select("*")
+        .eq("is_public", true)
+        .order("created_at", { ascending: false });
+    }
+    if (res.error) {
+      res = await client
+        .from("snippets")
+        .select("*")
+        .eq("is_public", true);
     }
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
@@ -580,6 +596,87 @@ document.addEventListener("DOMContentLoaded", function () {
     document.body.removeChild(ta);
   }
 
+  function createSnippetCardElement(snippet) {
+    var card = document.createElement("div");
+    card.className = "snippet-card";
+    card.setAttribute("data-expertise", snippet.expertise_area || "");
+
+    var uInfo = snippet.users || {};
+    var authorName = uInfo.username || snippet.author_name || "Anonim";
+    var authorAvatarUrl = (uInfo.avatar_url || snippet.author_avatar_url || "").trim();
+    var authorLetter = authorName.trim().charAt(0).toUpperCase() || "U";
+    var authorUserId = snippet.user_id || "";
+    var dateStr = formatReadableDate(snippet.created_at);
+    var escapedCode = escapeHtml(snippet.code_content || "");
+
+    var avatarHtml = "";
+    if (authorAvatarUrl) {
+      avatarHtml = '<img class="snippet-author-avatar-img" src="' + escapeHtml(authorAvatarUrl) + '" alt="' + escapeHtml(authorName) + '">' +
+                   '<div class="snippet-author-avatar" style="display: none;">' + authorLetter + '</div>';
+    } else {
+      avatarHtml = '<div class="snippet-author-avatar">' + authorLetter + '</div>';
+    }
+
+    card.innerHTML =
+      '<div class="snippet-card-header">' +
+        '<div class="snippet-card-meta">' +
+          '<div class="snippet-card-title">' + escapeHtml(snippet.title || "Basliksiz") + '</div>' +
+          '<div class="snippet-card-info">' +
+            '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
+      '</div>' +
+      '<div class="snippet-code-block">' +
+        '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
+        '<pre><code>' + escapedCode + '</code></pre>' +
+      '</div>' +
+      '<div class="snippet-card-footer">' +
+        '<button type="button" class="snippet-author-btn" data-user-id="' + escapeHtml(authorUserId) + '">' +
+          avatarHtml +
+          '<span class="snippet-author-name">' + escapeHtml(authorName) + '</span>' +
+        '</button>' +
+        '<span class="snippet-date">' + dateStr + '</span>' +
+      '</div>';
+
+    var img = card.querySelector(".snippet-author-avatar-img");
+    var fallback = card.querySelector(".snippet-author-avatar");
+    if (img && fallback) {
+      img.onerror = function () {
+        img.style.display = "none";
+        fallback.style.display = "flex";
+      };
+    }
+
+    var copyBtn = card.querySelector(".snippet-copy-btn");
+    if (copyBtn) {
+      (function (btn, rawCode) {
+        btn.addEventListener("click", function () {
+          copyTextToClipboard(rawCode, function () {
+            btn.innerText = "Kopyalandi";
+            setTimeout(function () {
+              btn.innerText = "Kopyala";
+            }, 2000);
+          });
+        });
+      })(copyBtn, snippet.code_content || "");
+    }
+
+    var authorBtn = card.querySelector(".snippet-author-btn");
+    if (authorBtn) {
+      (function (btn, uid) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          if (uid) {
+            loadUserProfile(uid);
+          }
+        });
+      })(authorBtn, authorUserId);
+    }
+
+    return card;
+  }
+
   function renderSnippetsFeed(snippets) {
     var feed = document.getElementById("snippets-feed");
     var emptyEl = document.getElementById("snippets-empty");
@@ -608,57 +705,177 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     list.forEach(function (snippet) {
-      var card = document.createElement("div");
-      card.className = "snippet-card";
-      card.setAttribute("data-expertise", snippet.expertise_area || "");
-
-      var authorName = "Anonim";
-      if (snippet.users && snippet.users.username) {
-        authorName = snippet.users.username;
-      } else if (snippet.users && snippet.users.email) {
-        authorName = snippet.users.email.split("@")[0];
-      }
-      var authorLetter = authorName.trim().charAt(0).toUpperCase();
-      var dateStr = formatReadableDate(snippet.created_at);
-      var escapedCode = escapeHtml(snippet.code_content || "");
-
-      card.innerHTML =
-        '<div class="snippet-card-header">' +
-          '<div class="snippet-card-meta">' +
-            '<div class="snippet-card-title">' + escapeHtml(snippet.title || "Basliklsiz") + '</div>' +
-            '<div class="snippet-card-info">' +
-              '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
-            '</div>' +
-          '</div>' +
-          '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
-        '</div>' +
-        '<div class="snippet-code-block">' +
-          '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
-          '<pre><code>' + escapedCode + '</code></pre>' +
-        '</div>' +
-        '<div class="snippet-card-footer">' +
-          '<div class="snippet-author">' +
-            '<div class="snippet-author-avatar">' + authorLetter + '</div>' +
-            '<span>' + escapeHtml(authorName) + '</span>' +
-          '</div>' +
-          '<span class="snippet-date">' + dateStr + '</span>' +
-        '</div>';
-
+      var card = createSnippetCardElement(snippet);
       feed.appendChild(card);
+    });
+  }
 
-      var copyBtn = card.querySelector(".snippet-copy-btn");
-      if (copyBtn) {
-        (function (btn, rawCode) {
-          btn.addEventListener("click", function () {
-            copyTextToClipboard(rawCode, function () {
-              btn.innerText = "Kopyalandi";
-              setTimeout(function () {
-                btn.innerText = "Kopyala";
-              }, 2000);
-            });
-          });
-        })(copyBtn, snippet.code_content || "");
+  async function loadUserProfile(userId) {
+    if (!userId) return;
+    addLog("Kullanici profili yukleniyor: " + userId);
+
+    document.querySelectorAll(".tab-panel").forEach(function (panel) {
+      panel.classList.remove("active");
+    });
+    document.querySelectorAll(".sidebar-item").forEach(function (si) {
+      si.classList.remove("active");
+    });
+
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) {
+      profileView.style.display = "block";
+    }
+
+    var nameEl = document.getElementById("public-profile-username");
+    var bioEl = document.getElementById("public-profile-bio");
+    var imgEl = document.getElementById("public-profile-avatar-img");
+    var fallbackEl = document.getElementById("public-profile-avatar-fallback");
+    var countEl = document.getElementById("public-profile-snippet-count");
+    var feedEl = document.getElementById("public-profile-snippets-feed");
+    var emptyEl = document.getElementById("public-profile-empty");
+
+    if (nameEl) nameEl.innerText = "Yukleniyor...";
+    if (bioEl) bioEl.innerText = "";
+    if (imgEl) {
+      imgEl.style.display = "none";
+      imgEl.src = "";
+    }
+    if (fallbackEl) {
+      fallbackEl.style.display = "flex";
+      fallbackEl.innerText = "U";
+    }
+    if (countEl) countEl.innerText = "0 Kod Parcacigi";
+    if (feedEl) feedEl.innerHTML = "";
+    if (emptyEl) emptyEl.style.display = "none";
+
+    var client = getSupabaseClient();
+    var userData = null;
+    var userSnippets = [];
+
+    if (client) {
+      try {
+        var userRes = await client.from("users").select("id, username, email, bio, avatar_url, created_at").eq("id", userId).maybeSingle();
+        if (userRes.data) {
+          userData = userRes.data;
+        }
+      } catch (e) {}
+
+      try {
+        var snipRes = await client
+          .from("snippets")
+          .select("*, users:user_id(username, avatar_url, bio)")
+          .eq("user_id", userId)
+          .eq("is_public", true)
+          .order("created_at", { ascending: false });
+
+        if (snipRes.error) {
+          snipRes = await client
+            .from("snippets")
+            .select("*")
+            .eq("user_id", userId)
+            .eq("is_public", true)
+            .order("created_at", { ascending: false });
+        }
+
+        if (snipRes.data) {
+          userSnippets = snipRes.data;
+        }
+      } catch (e) {}
+    }
+
+    if (!userData) {
+      var foundCached = cachedUsers.find(function (u) { return u.id === userId; });
+      if (foundCached) {
+        userData = foundCached;
+      } else {
+        var snipWithUser = cachedSnippets.find(function (s) { return s.user_id === userId && s.users; });
+        if (snipWithUser && snipWithUser.users) {
+          userData = {
+            id: userId,
+            username: snipWithUser.users.username,
+            avatar_url: snipWithUser.users.avatar_url,
+            bio: snipWithUser.users.bio
+          };
+        }
       }
+    }
+
+    var uName = (userData && userData.username) || (userData && userData.email ? userData.email.split("@")[0] : "Anonim Kullanici");
+    var uBio = (userData && userData.bio) ? userData.bio : "Bu kullanici henuz bir biyografi eklemedi.";
+    var uAvatar = (userData && userData.avatar_url) ? userData.avatar_url.trim() : "";
+    var uInitial = uName.trim().charAt(0).toUpperCase() || "U";
+
+    if (nameEl) nameEl.innerText = uName;
+    if (bioEl) bioEl.innerText = uBio;
+
+    if (imgEl && fallbackEl) {
+      if (uAvatar) {
+        imgEl.src = uAvatar;
+        imgEl.style.display = "block";
+        fallbackEl.style.display = "none";
+        imgEl.onerror = function () {
+          imgEl.style.display = "none";
+          fallbackEl.style.display = "flex";
+          fallbackEl.innerText = uInitial;
+        };
+      } else {
+        imgEl.style.display = "none";
+        fallbackEl.style.display = "flex";
+        fallbackEl.innerText = uInitial;
+      }
+    }
+
+    if (countEl) {
+      countEl.innerText = userSnippets.length + " Kod Parcacigi";
+    }
+
+    if (feedEl) {
+      feedEl.innerHTML = "";
+      if (userSnippets.length === 0) {
+        if (emptyEl) emptyEl.style.display = "block";
+      } else {
+        if (emptyEl) emptyEl.style.display = "none";
+        userSnippets.forEach(function (snip) {
+          if (!snip.users && userData) {
+            snip.users = {
+              username: userData.username,
+              avatar_url: userData.avatar_url,
+              bio: userData.bio
+            };
+          }
+          var card = createSnippetCardElement(snip);
+          feedEl.appendChild(card);
+        });
+      }
+    }
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  var backFromProfileBtn = document.getElementById("btn-back-from-profile");
+  if (backFromProfileBtn) {
+    backFromProfileBtn.addEventListener("click", function () {
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) {
+        profileView.style.display = "none";
+      }
+
+      tabPanels.forEach(function (p) { p.classList.remove("active"); });
+      sidebarItems.forEach(function (si) { si.classList.remove("active"); });
+
+      var snippetsPanel = document.getElementById("tab-snippets");
+      if (snippetsPanel) {
+        snippetsPanel.classList.add("active");
+      }
+
+      var snippetsSidebarBtn = document.querySelector('.sidebar-item[data-tab="tab-snippets"]');
+      if (snippetsSidebarBtn) {
+        snippetsSidebarBtn.classList.add("active");
+      }
+
+      fetchPublicSnippets().then(function (data) {
+        renderSnippetsFeed(data);
+      });
     });
   }
 
@@ -875,10 +1092,15 @@ document.addEventListener("DOMContentLoaded", function () {
         var data = await cloudSignIn(email, pass, captchaToken);
         var u = data.user;
         var metaName = (u && u.user_metadata && u.user_metadata.username) || email.split("@")[0];
+        var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || "";
+        var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
+
         currentUser = {
           id: u ? u.id : "user-id",
           email: u ? u.email : email,
-          username: metaName
+          username: metaName,
+          avatar_url: metaAvatar,
+          bio: metaBio
         };
 
         var roleLabel = isAdmin(currentUser.email) ? "Yonetici (Admin)" : "Standart Kullanici";
@@ -1142,32 +1364,46 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  function populateSettings() {
+  function populateEditProfile() {
     if (!currentUser) return;
-    var un = document.getElementById("set-username");
-    var em = document.getElementById("set-email");
-    var pw = document.getElementById("set-password");
+    var un = document.getElementById("edit-username");
+    var av = document.getElementById("edit-avatar-url");
+    var bio = document.getElementById("edit-bio");
+    var charNum = document.getElementById("bio-char-num");
+
     if (un) un.value = currentUser.username || "";
-    if (em) em.value = currentUser.email || "";
-    if (pw) pw.value = "";
-    hideAlert("settings-alert");
+    if (av) av.value = currentUser.avatar_url || "";
+    if (bio) bio.value = currentUser.bio || "";
+    if (charNum) charNum.innerText = (currentUser.bio || "").length;
+    hideAlert("edit-profile-alert");
   }
 
-  var settingsForm = document.getElementById("settings-form");
-  if (settingsForm) {
-    settingsForm.addEventListener("submit", async function (e) {
-      e.preventDefault();
-      hideAlert("settings-alert");
-      var btn = document.getElementById("settings-submit-btn");
-      var newName = document.getElementById("set-username").value.trim();
-      var newPass = document.getElementById("set-password").value.trim();
+  var bioTextarea = document.getElementById("edit-bio");
+  if (bioTextarea) {
+    bioTextarea.addEventListener("input", function () {
+      var charNum = document.getElementById("bio-char-num");
+      if (charNum) {
+        charNum.innerText = bioTextarea.value.length;
+      }
+    });
+  }
 
-      if (!newName) {
-        showAlert("settings-alert", "Kullanici adi bos birakilamaz.", "error");
+  var editProfileForm = document.getElementById("edit-profile-form");
+  if (editProfileForm) {
+    editProfileForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      hideAlert("edit-profile-alert");
+      var btn = document.getElementById("edit-profile-submit-btn");
+      var newUsername = document.getElementById("edit-username").value.trim();
+      var newAvatarUrl = document.getElementById("edit-avatar-url").value.trim();
+      var newBio = document.getElementById("edit-bio").value.trim();
+
+      if (!newUsername) {
+        showAlert("edit-profile-alert", "Kullanici adi bos birakilamaz.", "error");
         return;
       }
-      if (newPass && newPass.length < 6) {
-        showAlert("settings-alert", "Yeni sifre en az 6 karakter olmalidir.", "error");
+      if (newBio.length > 200) {
+        showAlert("edit-profile-alert", "Biyografi maksimum 200 karakter olabilir.", "error");
         return;
       }
 
@@ -1177,14 +1413,14 @@ document.addEventListener("DOMContentLoaded", function () {
       }
 
       try {
-        await cloudUpdateUser(newName, newPass);
+        await updateUserProfile(newUsername, newAvatarUrl, newBio);
+        showAlert("edit-profile-alert", "Profil basariyla guncellendi.", "success");
+        addLog("Kullanici profili guncellendi (" + newUsername + ")");
         updateDashHeader();
         updateNavState();
-        addLog("Profil ayarlari bulut sunucusunda guncellendi (" + newName + ")");
-        showAlert("settings-alert", "Profil bilgileri bulut uzerinde guncellendi.", "success");
         await refreshDashboardData();
       } catch (err) {
-        showAlert("settings-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
+        showAlert("edit-profile-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
       } finally {
         if (btn) {
           btn.disabled = false;
@@ -1242,6 +1478,8 @@ document.addEventListener("DOMContentLoaded", function () {
                   username: row.username || "Kullanici",
                   email: row.email || ("user" + i + "@nexus.cloud"),
                   role: row.role || (isAdmin(row.email) ? "admin" : "user"),
+                  bio: row.bio || "",
+                  avatar_url: row.avatar_url || "",
                   created_at: row.created_at || new Date().toISOString()
                 };
                 await client.from("users").upsert(rowObj);
@@ -1297,6 +1535,11 @@ document.addEventListener("DOMContentLoaded", function () {
       sidebarItems.forEach(function (si) { si.classList.remove("active"); });
       this.classList.add("active");
 
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) {
+        profileView.style.display = "none";
+      }
+
       tabPanels.forEach(function (p) { p.classList.remove("active"); });
       var target = document.getElementById(tabId);
       if (target) target.classList.add("active");
@@ -1311,8 +1554,8 @@ document.addEventListener("DOMContentLoaded", function () {
         renderDatabaseView(cachedUsers);
         renderLogs();
         await refreshDashboardData();
-      } else if (tabId === "tab-settings") {
-        populateSettings();
+      } else if (tabId === "tab-edit-profile") {
+        populateEditProfile();
       } else if (tabId === "tab-overview") {
         renderRecentUsers(cachedUsers);
         var isUserAdmin = currentUser && isAdmin(currentUser.email);
@@ -1331,6 +1574,19 @@ document.addEventListener("DOMContentLoaded", function () {
 
   async function refreshDashboardData() {
     try {
+      var client = getSupabaseClient();
+      if (client && currentUser && currentUser.id) {
+        try {
+          var meRes = await client.from("users").select("username, bio, avatar_url").eq("id", currentUser.id).maybeSingle();
+          if (meRes && meRes.data) {
+            currentUser.username = meRes.data.username || currentUser.username;
+            currentUser.bio = meRes.data.bio || currentUser.bio || "";
+            currentUser.avatar_url = meRes.data.avatar_url || currentUser.avatar_url || "";
+            updateDashHeader();
+          }
+        } catch (e) {}
+      }
+
       var users = await cloudFetchUsers();
       var isUserAdmin = currentUser && isAdmin(currentUser.email);
       var statUsers = document.getElementById("stat-users");
@@ -1384,7 +1640,9 @@ document.addEventListener("DOMContentLoaded", function () {
       currentUser = {
         id: "admin-session",
         email: ADMIN_EMAIL,
-        username: "semih"
+        username: "semih",
+        avatar_url: "",
+        bio: ""
       };
     }
     applyRolePermissions();
@@ -1413,6 +1671,9 @@ document.addEventListener("DOMContentLoaded", function () {
     tabPanels.forEach(function (p) { p.classList.remove("active"); });
     var overviewPanel = document.getElementById("tab-overview");
     if (overviewPanel) overviewPanel.classList.add("active");
+
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) profileView.style.display = "none";
   }
 
   async function checkInitialSession() {
@@ -1423,10 +1684,15 @@ document.addEventListener("DOMContentLoaded", function () {
         if (res.data && res.data.session) {
           var u = res.data.session.user;
           var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.email ? u.email.split("@")[0] : "Kullanici");
+          var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || "";
+          var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
+
           currentUser = {
             id: u.id,
             email: u.email,
-            username: metaName
+            username: metaName,
+            avatar_url: metaAvatar,
+            bio: metaBio
           };
           showView("dashboard");
           return;
@@ -1437,16 +1703,22 @@ document.addEventListener("DOMContentLoaded", function () {
         if (event === "SIGNED_IN" && session && session.user) {
           var u = session.user;
           var metaName = (u.user_metadata && u.user_metadata.username) || (u.user_metadata && u.user_metadata.full_name) || (u.user_metadata && u.user_metadata.preferred_username) || u.email.split("@")[0];
+          var metaAvatar = (u.user_metadata && u.user_metadata.avatar_url) || "";
+          var metaBio = (u.user_metadata && u.user_metadata.bio) || "";
+
           currentUser = {
             id: u.id,
             email: u.email,
-            username: metaName
+            username: metaName,
+            avatar_url: metaAvatar,
+            bio: metaBio
           };
+
           var provider = (u.app_metadata && u.app_metadata.provider) || "email";
           if (provider === "github") {
             var cl = getSupabaseClient();
             if (cl) {
-              var checkRes = await cl.from("users").select("id").eq("id", u.id).maybeSingle();
+              var checkRes = await cl.from("users").select("id, username, bio, avatar_url").eq("id", u.id).maybeSingle();
               if (!checkRes.data) {
                 var userRole = isAdmin(u.email) ? "admin" : "user";
                 await cl.from("users").insert([{
@@ -1454,9 +1726,15 @@ document.addEventListener("DOMContentLoaded", function () {
                   username: metaName,
                   email: u.email,
                   role: userRole,
+                  bio: metaBio,
+                  avatar_url: metaAvatar,
                   created_at: new Date().toISOString()
                 }]);
                 addLog("GitHub OAuth ile yeni kullanici kaydedildi: " + metaName);
+              } else {
+                currentUser.username = checkRes.data.username || currentUser.username;
+                currentUser.bio = checkRes.data.bio || currentUser.bio;
+                currentUser.avatar_url = checkRes.data.avatar_url || currentUser.avatar_url;
               }
             }
           }
@@ -1465,10 +1743,15 @@ document.addEventListener("DOMContentLoaded", function () {
         } else if (session && session.user) {
           var u2 = session.user;
           var metaName2 = (u2.user_metadata && u2.user_metadata.username) || (u2.user_metadata && u2.user_metadata.preferred_username) || u2.email.split("@")[0];
+          var metaAvatar2 = (u2.user_metadata && u2.user_metadata.avatar_url) || "";
+          var metaBio2 = (u2.user_metadata && u2.user_metadata.bio) || "";
+
           currentUser = {
             id: u2.id,
             email: u2.email,
-            username: metaName2
+            username: metaName2,
+            avatar_url: metaAvatar2,
+            bio: metaBio2
           };
           updateNavState();
         } else {
@@ -1490,7 +1773,7 @@ document.addEventListener("DOMContentLoaded", function () {
     var res = await client.auth.signInWithOAuth({
       provider: "github",
       options: {
-        redirectTo: "https://saas-theta-ochre.vercel.app"
+        redirectTo: window.location.origin
       }
     });
     if (res.error) {
@@ -1500,7 +1783,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var githubLoginBtn = document.getElementById("github-login-btn");
   if (githubLoginBtn) {
-    githubLoginBtn.addEventListener("click", function () {
+    githubLoginBtn.addEventListener("click", function (e) {
+      e.preventDefault();
       githubLoginBtn.disabled = true;
       githubLoginBtn.innerText = "Yonlendiriliyor...";
       signInWithGitHub();
@@ -1509,7 +1793,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var githubRegisterBtn = document.getElementById("github-register-btn");
   if (githubRegisterBtn) {
-    githubRegisterBtn.addEventListener("click", function () {
+    githubRegisterBtn.addEventListener("click", function (e) {
+      e.preventDefault();
       githubRegisterBtn.disabled = true;
       githubRegisterBtn.innerText = "Yonlendiriliyor...";
       signInWithGitHub();
