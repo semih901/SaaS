@@ -5,15 +5,6 @@ const SUPABASE_CONFIG = {
 
 const ADMIN_EMAIL = "semihcifci100@gmail.com";
 
-async function signInWithGitHub() {
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'github',
-    options: {
-      redirectTo: 'https://saas-theta-ochre.vercel.app'
-    }
-  })
-}
-
 document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
 
@@ -1405,14 +1396,42 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       } catch (e) {}
 
-      client.auth.onAuthStateChange(function (event, session) {
-        if (session && session.user) {
+      client.auth.onAuthStateChange(async function (event, session) {
+        if (event === "SIGNED_IN" && session && session.user) {
           var u = session.user;
-          var metaName = (u.user_metadata && u.user_metadata.username) || u.email.split("@")[0];
+          var metaName = (u.user_metadata && u.user_metadata.username) || (u.user_metadata && u.user_metadata.full_name) || (u.user_metadata && u.user_metadata.preferred_username) || u.email.split("@")[0];
           currentUser = {
             id: u.id,
             email: u.email,
             username: metaName
+          };
+          var provider = (u.app_metadata && u.app_metadata.provider) || "email";
+          if (provider === "github") {
+            var cl = getSupabaseClient();
+            if (cl) {
+              var checkRes = await cl.from("users").select("id").eq("id", u.id).maybeSingle();
+              if (!checkRes.data) {
+                var userRole = isAdmin(u.email) ? "admin" : "user";
+                await cl.from("users").insert([{
+                  id: u.id,
+                  username: metaName,
+                  email: u.email,
+                  role: userRole,
+                  created_at: new Date().toISOString()
+                }]);
+                addLog("GitHub OAuth ile yeni kullanici kaydedildi: " + metaName);
+              }
+            }
+          }
+          updateNavState();
+          showView("dashboard");
+        } else if (session && session.user) {
+          var u2 = session.user;
+          var metaName2 = (u2.user_metadata && u2.user_metadata.username) || (u2.user_metadata && u2.user_metadata.preferred_username) || u2.email.split("@")[0];
+          currentUser = {
+            id: u2.id,
+            email: u2.email,
+            username: metaName2
           };
           updateNavState();
         } else {
@@ -1423,6 +1442,41 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     showView("landing");
+  }
+
+  async function signInWithGitHub() {
+    var client = getSupabaseClient();
+    if (!client) {
+      alert("Supabase baglantisi kurulamadi.");
+      return;
+    }
+    var res = await client.auth.signInWithOAuth({
+      provider: "github",
+      options: {
+        redirectTo: "https://saas-theta-ochre.vercel.app"
+      }
+    });
+    if (res.error) {
+      alert("GitHub giris hatasi: " + res.error.message);
+    }
+  }
+
+  var githubLoginBtn = document.getElementById("github-login-btn");
+  if (githubLoginBtn) {
+    githubLoginBtn.addEventListener("click", function () {
+      githubLoginBtn.disabled = true;
+      githubLoginBtn.innerText = "Yonlendiriliyor...";
+      signInWithGitHub();
+    });
+  }
+
+  var githubRegisterBtn = document.getElementById("github-register-btn");
+  if (githubRegisterBtn) {
+    githubRegisterBtn.addEventListener("click", function () {
+      githubRegisterBtn.disabled = true;
+      githubRegisterBtn.innerText = "Yonlendiriliyor...";
+      signInWithGitHub();
+    });
   }
 
   checkInitialSession();
