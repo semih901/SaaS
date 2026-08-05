@@ -43,11 +43,97 @@ document.addEventListener("DOMContentLoaded", function () {
     return false;
   }
 
+  function getFriendlyAuthErrorMessage(err) {
+    if (!err) return "Bir hata olustu. Lutfen tekrar deneyin.";
+    var msg = (typeof err === "string" ? err : (err.message || "")).toLowerCase();
+
+    if (msg.indexOf("invalid login credentials") !== -1 || msg.indexOf("invalid credentials") !== -1) {
+      return "E-posta adresi veya sifre hatali.";
+    }
+    if (msg.indexOf("user not found") !== -1) {
+      return "Girdiginiz e-posta adresi ile kayitli bir hesap bulunamadi.";
+    }
+    if (msg.indexOf("email not confirmed") !== -1) {
+      return "E-posta adresiniz henuz dogrulanmamis. Lutfen gelen kutunuzu kontrol edin.";
+    }
+    if (msg.indexOf("user already registered") !== -1 || msg.indexOf("already registered") !== -1) {
+      return "Bu e-posta adresi ile kayitli bir hesap zaten mevcut.";
+    }
+    if (msg.indexOf("password should be at least") !== -1 || msg.indexOf("password is too short") !== -1) {
+      return "Sifreniz en az 6 karakter olmalidir.";
+    }
+    if (msg.indexOf("valid email") !== -1 || msg.indexOf("invalid email") !== -1) {
+      return "Gecerli bir e-posta adresi giriniz.";
+    }
+    if (msg.indexOf("rate limit") !== -1 || msg.indexOf("too many requests") !== -1) {
+      return "Cok fazla deneme yapildi. Lutfen bir sure bekleyip tekrar deneyin.";
+    }
+    if (msg.indexOf("captcha") !== -1) {
+      return "Guvenlik dogrulamasi basarisiz oldu. Lutfen tekrar deneyin.";
+    }
+    if (msg.indexOf("network") !== -1 || msg.indexOf("fetch") !== -1) {
+      return "Ag baglantisi hatasi. Lutfen internet baglantinizi kontrol edin.";
+    }
+    return typeof err === "string" ? err : (err.message || "Islem basarisiz oldu. Lutfen bilgilerinizi kontrol edin.");
+  }
+
+  async function syncOAuthUserData(user) {
+    if (!user) return;
+    var client = getSupabaseClient();
+    if (!client) return;
+
+    var meta = user.user_metadata || {};
+    var googleAvatar = meta.avatar_url || meta.picture || "";
+    var googleUsername = meta.full_name || meta.name || meta.username || meta.preferred_username || (user.email ? user.email.split("@")[0] : "Gelistirici");
+
+    try {
+      var existingUser = await client.from("users").select("id, username, avatar_url, role, bio").eq("id", user.id).maybeSingle();
+      var defaultRole = (existingUser && existingUser.data && existingUser.data.role) ? existingUser.data.role : "user";
+      var existingAvatar = existingUser && existingUser.data ? existingUser.data.avatar_url : "";
+      var existingBio = existingUser && existingUser.data ? existingUser.data.bio : "";
+      var existingUsername = existingUser && existingUser.data ? existingUser.data.username : "";
+
+      var finalAvatar = existingAvatar || googleAvatar || "";
+      var finalUsername = existingUsername || googleUsername || "Gelistirici";
+
+      var userRecord = {
+        id: user.id,
+        email: user.email,
+        username: finalUsername,
+        role: defaultRole,
+        bio: existingBio || "",
+        avatar_url: finalAvatar,
+        created_at: new Date().toISOString()
+      };
+
+      if (!existingUser || !existingUser.data) {
+        await client.from("users").insert([userRecord]);
+      } else if (googleAvatar && !existingAvatar) {
+        await client.from("users").update({ avatar_url: googleAvatar, username: finalUsername }).eq("id", user.id);
+      }
+
+      try {
+        await client.from("profiles").upsert({
+          id: user.id,
+          username: finalUsername,
+          full_name: finalUsername,
+          bio: existingBio || "",
+          avatar_url: finalAvatar,
+          role: defaultRole,
+          updated_at: new Date().toISOString()
+        });
+      } catch (pe) {}
+    } catch (err) {
+      console.warn("OAuth senkronizasyon uyarisi:", err);
+    }
+  }
+
   async function fetchUserProfileAndRole(userId, email, meta) {
     var client = getSupabaseClient();
     var role = "user";
-    var username = (meta && (meta.username || meta.full_name || meta.preferred_username)) || (email ? email.split("@")[0] : "Gelistirici");
-    var avatar_url = (meta && meta.avatar_url) || "";
+    var googleAvatar = (meta && (meta.avatar_url || meta.picture)) || "";
+    var username = (meta && (meta.username || meta.full_name || meta.name || meta.preferred_username)) || (email ? email.split("@")[0] : "Gelistirici");
+    var avatar_url = googleAvatar;
     var bio = (meta && meta.bio) || "";
 
     if (client && userId) {
@@ -56,14 +142,14 @@ document.addEventListener("DOMContentLoaded", function () {
         if (res && res.data) {
           role = res.data.role || "user";
           username = res.data.username || username;
-          avatar_url = res.data.avatar_url || avatar_url;
+          avatar_url = res.data.avatar_url || googleAvatar;
           bio = res.data.bio || bio;
         } else {
           var userRes = await client.from("users").select("id, username, avatar_url, bio, role").eq("id", userId).maybeSingle();
           if (userRes && userRes.data) {
             role = userRes.data.role || "user";
             username = userRes.data.username || username;
-            avatar_url = userRes.data.avatar_url || avatar_url;
+            avatar_url = userRes.data.avatar_url || googleAvatar;
             bio = userRes.data.bio || bio;
           }
         }
@@ -591,6 +677,25 @@ document.addEventListener("DOMContentLoaded", function () {
       return cachedUsers || [];
     }
     var data = res.data || [];
+
+    try {
+      var profRes = await client.from("profiles").select("id, username, full_name, avatar_url, role");
+      if (profRes && profRes.data && profRes.data.length > 0) {
+        var profMap = {};
+        profRes.data.forEach(function (p) {
+          if (p.id) profMap[p.id] = p;
+        });
+        data.forEach(function (u) {
+          if (u.id && profMap[u.id]) {
+            var p = profMap[u.id];
+            if (!u.avatar_url && p.avatar_url) u.avatar_url = p.avatar_url;
+            if ((!u.role || u.role === "user") && p.role) u.role = p.role;
+            if (!u.username && (p.username || p.full_name)) u.username = p.username || p.full_name;
+          }
+        });
+      }
+    } catch (pe) {}
+
     cachedUsers = data;
     return data;
   }
@@ -956,9 +1061,38 @@ document.addEventListener("DOMContentLoaded", function () {
     hideAlert("snippet-alert");
   }
 
+  function showToast(message) {
+    if (!message) return;
+    var container = document.getElementById("toast-container");
+    if (!container) return;
+
+    var toast = document.createElement("div");
+    toast.className = "toast";
+    toast.innerHTML = '<span class="toast-message">' + escapeHtml(message) + '</span>';
+    container.appendChild(toast);
+
+    setTimeout(function () {
+      toast.classList.add("toast-show");
+    }, 10);
+
+    setTimeout(function () {
+      toast.classList.remove("toast-show");
+      toast.classList.add("toast-hide");
+      setTimeout(function () {
+        if (toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 300);
+    }, 2800);
+  }
+
+  function getVotedKey() {
+    return currentUser ? "sniphub_voted_" + (currentUser.id || currentUser.email) : "sniphub_voted_guest";
+  }
+
   function getVotedSnippets() {
     try {
-      var raw = localStorage.getItem("sniphub_voted_snippets");
+      var raw = localStorage.getItem(getVotedKey());
       return raw ? JSON.parse(raw) : [];
     } catch (e) { return []; }
   }
@@ -967,8 +1101,13 @@ document.addEventListener("DOMContentLoaded", function () {
     var voted = getVotedSnippets();
     if (voted.indexOf(snippetId) === -1) {
       voted.push(snippetId);
-      try { localStorage.setItem("sniphub_voted_snippets", JSON.stringify(voted)); } catch (e) {}
+      try { localStorage.setItem(getVotedKey(), JSON.stringify(voted)); } catch (e) {}
     }
+  }
+
+  function removeVotedSnippet(snippetId) {
+    var voted = getVotedSnippets().filter(function (id) { return id !== snippetId; });
+    try { localStorage.setItem(getVotedKey(), JSON.stringify(voted)); } catch (e) {}
   }
 
   function hasVotedSnippet(snippetId) {
@@ -995,6 +1134,17 @@ document.addEventListener("DOMContentLoaded", function () {
     } catch (e) {}
   }
 
+  async function decrementUpvote(snippetId) {
+    var client = getSupabaseClient();
+    if (!client || !snippetId) return;
+    try {
+      var res = await client.from("snippets").select("upvotes").eq("id", snippetId).maybeSingle();
+      var current = (res && res.data && typeof res.data.upvotes === "number") ? res.data.upvotes : 0;
+      var nextVotes = Math.max(0, current - 1);
+      await client.from("snippets").update({ upvotes: nextVotes }).eq("id", snippetId);
+    } catch (e) {}
+  }
+
   function isTrending(snippet) {
     var copies = (typeof snippet.copy_count === "number") ? snippet.copy_count : 0;
     var votes = (typeof snippet.upvotes === "number") ? snippet.upvotes : 0;
@@ -1015,7 +1165,11 @@ document.addEventListener("DOMContentLoaded", function () {
     var escapedCode = escapeHtml(snippet.code_content || "");
 
     var isOwner = currentUser && authorUserId && (String(currentUser.id) === String(authorUserId));
-    var editBtnHtml = isOwner ? '<button class="snippet-edit-btn" id="btn-edit-snippet" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Duzenle</button>' : "";
+    var isAdminUser = isUserAdmin(currentUser);
+    var canDelete = isOwner || isAdminUser;
+
+    var editBtnHtml = isOwner ? '<button class="snippet-edit-btn" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Duzenle</button>' : "";
+    var deleteBtnHtml = canDelete ? '<button class="snippet-delete-btn" data-delete-id="' + escapeHtml(snippet.id || "") + '">Sil</button>' : "";
 
     var avatarHtml = "";
     if (authorAvatarUrl) {
@@ -1056,6 +1210,7 @@ document.addEventListener("DOMContentLoaded", function () {
       '<div class="snippet-code-block">' +
         '<div class="snippet-code-actions">' +
           editBtnHtml +
+          deleteBtnHtml +
           '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
         '</div>' +
         '<pre><code>' + escapedCode + '</code></pre>' +
@@ -1092,12 +1247,37 @@ document.addEventListener("DOMContentLoaded", function () {
       });
     }
 
+    var deleteBtn = card.querySelector(".snippet-delete-btn");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", async function (e) {
+        e.preventDefault();
+        var ok = confirm("Bu kod parcacigini silmek istediginize emin misiniz?");
+        if (!ok) return;
+
+        try {
+          deleteBtn.disabled = true;
+          deleteBtn.innerText = "...";
+          await cloudDeleteSnippet(snippet.id);
+          cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== String(snippet.id); });
+          renderSnippetsFeed(cachedSnippets);
+          await updateSnippetCount();
+          showToast("Kod parcacigi silindi");
+          addLog((currentUser ? currentUser.username : "Kullanici") + " tarafindan kod parcacigi silindi: " + (snippet.title || "Basliksiz"));
+        } catch (err) {
+          alert("Silme islemi basarisiz oldu: " + (err.message || err));
+          deleteBtn.disabled = false;
+          deleteBtn.innerText = "Sil";
+        }
+      });
+    }
+
     var copyBtn = card.querySelector(".snippet-copy-btn");
     if (copyBtn) {
       (function (btn, rawCode, snipId, snipObj) {
         btn.addEventListener("click", function () {
           copyTextToClipboard(rawCode, function () {
             btn.innerText = "Kopyalandi";
+            showToast("Kod panoya kopyalandi");
             setTimeout(function () { btn.innerText = "Kopyala"; }, 2000);
 
             if (snipId) {
@@ -1123,22 +1303,35 @@ document.addEventListener("DOMContentLoaded", function () {
       (function (btn, snipId, snipObj) {
         btn.addEventListener("click", function () {
           if (!currentUser) {
-            alert("Oy vermek icin giris yapmaniz gerekiyor.");
+            showToast("Oy vermek icin giris yapmalisiniz");
             return;
           }
-          if (hasVotedSnippet(snipId)) {
-            return;
-          }
-          addVotedSnippet(snipId);
-          btn.classList.add("voted");
-          if (typeof snipObj.upvotes === "number") {
-            snipObj.upvotes = snipObj.upvotes + 1;
+          var currentlyVoted = hasVotedSnippet(snipId);
+          if (currentlyVoted) {
+            removeVotedSnippet(snipId);
+            btn.classList.remove("voted");
+            if (typeof snipObj.upvotes === "number") {
+              snipObj.upvotes = Math.max(0, snipObj.upvotes - 1);
+            } else {
+              snipObj.upvotes = 0;
+            }
+            var numEl = btn.querySelector(".upvote-num");
+            if (numEl) numEl.innerText = snipObj.upvotes;
+            decrementUpvote(snipId);
+            showToast("Begeni kaldirildi");
           } else {
-            snipObj.upvotes = 1;
+            addVotedSnippet(snipId);
+            btn.classList.add("voted");
+            if (typeof snipObj.upvotes === "number") {
+              snipObj.upvotes = snipObj.upvotes + 1;
+            } else {
+              snipObj.upvotes = 1;
+            }
+            var numEl2 = btn.querySelector(".upvote-num");
+            if (numEl2) numEl2.innerText = snipObj.upvotes;
+            incrementUpvote(snipId);
+            showToast("Begeni kaydedildi");
           }
-          var numEl = btn.querySelector(".upvote-num");
-          if (numEl) numEl.innerText = snipObj.upvotes;
-          incrementUpvote(snipId);
         });
       })(upvoteBtn, snippet.id, snippet);
     }
@@ -1534,6 +1727,7 @@ document.addEventListener("DOMContentLoaded", function () {
         try {
           await updateSnippet(editingSnippetId, title, language, expertiseArea, isPublic, codeContent);
           showAlert("snippet-alert", "Kod parcacigi basariyla guncellendi.", "success");
+          showToast("Kod parcacigi guncellendi");
           resetSnippetFormState();
           await fetchPublicSnippets();
           renderSnippetsFeed(cachedSnippets);
@@ -1554,6 +1748,7 @@ document.addEventListener("DOMContentLoaded", function () {
         try {
           await insertSnippet(title, language, expertiseArea, isPublic, codeContent);
           showAlert("snippet-alert", "Kod parcacigi basariyla bulut sunucusuna kaydedildi.", "success");
+          showToast("Kod parcacigi kaydedildi");
           resetSnippetFormState();
           await fetchPublicSnippets();
           renderSnippetsFeed(cachedSnippets);
@@ -1645,7 +1840,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }, 1200);
       } catch (err) {
         resetCaptcha();
-        showAlert("register-alert", err.message || "Kayit basarisiz oldu.", "error");
+        showAlert("register-alert", getFriendlyAuthErrorMessage(err), "error");
       } finally {
         if (btn) {
           btn.disabled = false;
@@ -1689,6 +1884,10 @@ document.addEventListener("DOMContentLoaded", function () {
           u ? u.user_metadata : null
         );
 
+        if (u) {
+          await syncOAuthUserData(u);
+        }
+
         var roleLabel = currentUser.role === "admin" ? "Yonetici (Admin)" : "Gelistirici";
         addLog(currentUser.username + " bulut oturumu dogrulandi -- Rol: " + roleLabel);
         loginForm.reset();
@@ -1697,7 +1896,7 @@ document.addEventListener("DOMContentLoaded", function () {
         showView("dashboard");
       } catch (err) {
         resetCaptcha();
-        showAlert("login-alert", err.message || "Giris basarisiz. Lutfen bilgilerinizi kontrol edin.", "error");
+        showAlert("login-alert", getFriendlyAuthErrorMessage(err), "error");
       } finally {
         if (btn) {
           btn.disabled = false;
@@ -2598,6 +2797,7 @@ document.addEventListener("DOMContentLoaded", function () {
         var res = await client.auth.getSession();
         if (res.data && res.data.session) {
           var u = res.data.session.user;
+          await syncOAuthUserData(u);
           currentUser = await fetchUserProfileAndRole(
             u.id,
             u.email,
@@ -2614,51 +2814,13 @@ document.addEventListener("DOMContentLoaded", function () {
       client.auth.onAuthStateChange(async function (event, session) {
         if (event === "SIGNED_IN" && session && session.user) {
           var u = session.user;
+          await syncOAuthUserData(u);
           currentUser = await fetchUserProfileAndRole(
             u.id,
             u.email,
             u.user_metadata
           );
 
-          var provider = (u.app_metadata && u.app_metadata.provider) || "email";
-          if (provider === "github" || provider === "google") {
-            var cl = getSupabaseClient();
-            if (cl) {
-              var checkRes = await cl.from("profiles").select("id, username, bio, avatar_url, role").eq("id", u.id).maybeSingle();
-              if (!checkRes || !checkRes.data) {
-                var checkUserRes = await cl.from("users").select("id, username, bio, avatar_url, role").eq("id", u.id).maybeSingle();
-                if (!checkUserRes || !checkUserRes.data) {
-                  var defaultRole = "user";
-                  var userRecord = {
-                    id: u.id,
-                    username: currentUser.username,
-                    email: u.email,
-                    role: defaultRole,
-                    bio: currentUser.bio,
-                    avatar_url: currentUser.avatar_url,
-                    created_at: new Date().toISOString()
-                  };
-                  await cl.from("users").insert([userRecord]);
-                  try {
-                    await cl.from("profiles").insert([{
-                      id: u.id,
-                      username: currentUser.username,
-                      full_name: currentUser.username,
-                      bio: currentUser.bio,
-                      avatar_url: currentUser.avatar_url,
-                      role: defaultRole,
-                      updated_at: new Date().toISOString()
-                    }]);
-                  } catch (pe) {}
-                  addLog((provider === "google" ? "Google" : "GitHub") + " OAuth ile yeni kullanici kaydedildi: " + currentUser.username);
-                } else {
-                  currentUser.role = checkUserRes.data.role || "user";
-                }
-              } else {
-                currentUser.role = checkRes.data.role || "user";
-              }
-            }
-          }
           applyRolePermissions();
           updateNavState();
           updateDashHeader();
@@ -2669,6 +2831,7 @@ document.addEventListener("DOMContentLoaded", function () {
           }
         } else if (session && session.user) {
           var u2 = session.user;
+          await syncOAuthUserData(u2);
           currentUser = await fetchUserProfileAndRole(
             u2.id,
             u2.email,
@@ -2851,6 +3014,7 @@ document.addEventListener("DOMContentLoaded", function () {
         copyTextToClipboard(currentRandomSnippet.code_content, function () {
           btnRandomCopy.innerHTML =
             '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Kopyalandi';
+          showToast("Kod panoya kopyalandi");
           setTimeout(function () {
             btnRandomCopy.innerHTML =
               '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Kopyala';
