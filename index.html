@@ -337,9 +337,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
             Kullanicilar
           </a>
-          <a href="#" class="sidebar-item" data-tab="tab-settings">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-            Ayarlar
+          <a href="#" class="sidebar-item" data-tab="tab-edit-profile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            Profili Duzenle
           </a>
           <a href="#" class="sidebar-item" data-tab="tab-database">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
@@ -482,36 +482,31 @@
           </div>
         </div>
 
-        <div class="tab-panel" id="tab-settings">
+        <div class="tab-panel" id="tab-edit-profile">
           <div class="tab-header">
-            <h2 class="tab-title">Profil Ayarlari</h2>
-            <p class="tab-desc">Bulut hesabiniza ait profil ve guvenlik bilgilerini guncelleyin.</p>
+            <h2 class="tab-title">Profili Duzenle</h2>
+            <p class="tab-desc">Kullanici profil bilgilerinizi, biyografinizi ve profil fotografinizi guncelleyin.</p>
           </div>
           <div class="card settings-card">
-            <div class="auth-alert" id="settings-alert"></div>
-            <form id="settings-form">
+            <div class="auth-alert" id="edit-profile-alert"></div>
+            <form id="edit-profile-form">
               <div class="settings-grid">
                 <div class="form-group">
-                  <label for="set-username">Kullanici Adi</label>
-                  <input type="text" id="set-username" name="username" required>
+                  <label for="edit-username">Kullanici Adi</label>
+                  <input type="text" id="edit-username" name="username" placeholder="kullaniciadi" required>
                 </div>
                 <div class="form-group">
-                  <label for="set-email">E-Posta Adresi</label>
-                  <input type="email" id="set-email" name="email" readonly>
+                  <label for="edit-avatar-url">Profil Fotografi URL</label>
+                  <input type="text" id="edit-avatar-url" name="avatar_url" placeholder="https://ornek.com/avatar.png">
                 </div>
               </div>
               <div class="form-group">
-                <label for="set-password">Yeni Sifre</label>
-                <div class="input-wrapper">
-                  <input type="password" id="set-password" name="password" placeholder="Degistirmek istemiyorsaniz bos birakin" minlength="6">
-                  <button type="button" class="toggle-password" aria-label="Sifreyi goster veya gizle">
-                    <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                    <svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
-                  </button>
-                </div>
+                <label for="edit-bio">Hakkimda / Bio (Maks. 200 karakter)</label>
+                <textarea id="edit-bio" name="bio" rows="4" maxlength="200" placeholder="Kendinizden kisaca bahsedin..."></textarea>
+                <div class="bio-char-count"><span id="bio-char-num">0</span> / 200</div>
               </div>
               <div class="settings-actions">
-                <button type="submit" class="auth-btn settings-btn" id="settings-submit-btn">Degisiklikleri Kaydet</button>
+                <button type="submit" class="auth-btn settings-btn" id="edit-profile-submit-btn">Degisiklikleri Kaydet</button>
               </div>
             </form>
           </div>
@@ -579,6 +574,34 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
               Tum Veri Tabanini Sifirla
             </button>
+          </div>
+        </div>
+
+        <div id="public-profile-view" class="public-profile-view" style="display: none;">
+          <div class="public-profile-top-bar">
+            <button type="button" class="btn-back-profile" id="btn-back-from-profile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+              Geri Don
+            </button>
+          </div>
+          <div class="card public-profile-card">
+            <div class="public-profile-avatar-box">
+              <div class="public-profile-avatar-fallback" id="public-profile-avatar-fallback">U</div>
+              <img id="public-profile-avatar-img" class="public-profile-avatar-img" src="" alt="Profil Fotografi" style="display: none;">
+            </div>
+            <h2 class="public-profile-name" id="public-profile-username">Kullanici</h2>
+            <p class="public-profile-bio-text" id="public-profile-bio">Bu kullanici henuz bir biyografi eklemedi.</p>
+            <div class="public-profile-stats">
+              <span class="public-profile-stat-badge" id="public-profile-snippet-count">0 Kod Parcacigi</span>
+            </div>
+          </div>
+          <div class="public-profile-snippets-wrap">
+            <div class="tab-header">
+              <h3 class="tab-title">Yazarin Kod Parcaciklari</h3>
+              <p class="tab-desc">Kullanicinin toplulukla paylastigi herkese acik kodlar.</p>
+            </div>
+            <div id="public-profile-snippets-feed"></div>
+            <div class="empty-state" id="public-profile-empty" style="display: none;">Bu kullanici henuz herkese acik kod parcacigi paylasmamis.</div>
           </div>
         </div>
       </main>

@@ -452,6 +452,55 @@ document.addEventListener("DOMContentLoaded", function () {
     currentUser.username = newUsername;
   }
 
+  async function updateUserProfile(username, bio, avatarUrl) {
+    var client = getSupabaseClient();
+    if (!client || !currentUser) {
+      throw new Error("Supabase baglantisi veya aktif kullanici oturumu bulunamadi.");
+    }
+    var t0 = performance.now();
+
+    var updatePayload = {
+      username: username,
+      bio: bio || "",
+      avatar_url: avatarUrl || ""
+    };
+
+    try {
+      await client.auth.updateUser({
+        data: updatePayload
+      });
+    } catch (e) {}
+
+    var dbRes = await client.from("users").update(updatePayload).eq("id", currentUser.id);
+    if (dbRes.error) {
+      dbRes = await client.from("users").update(updatePayload).eq("email", currentUser.email);
+    }
+
+    var t1 = performance.now();
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
+
+    if (dbRes && dbRes.error) {
+      throw dbRes.error;
+    }
+
+    currentUser.username = username;
+    currentUser.bio = bio || "";
+    currentUser.avatar_url = avatarUrl || "";
+
+    var cachedSelf = cachedUsers.find(function (u) {
+      return (currentUser.id && u.id === currentUser.id) || (u.email && u.email === currentUser.email);
+    });
+    if (cachedSelf) {
+      cachedSelf.username = username;
+      cachedSelf.bio = bio || "";
+      cachedSelf.avatar_url = avatarUrl || "";
+    }
+
+    updateDashHeader();
+    updateNavState();
+    addLog("Kullanici profili basariyla guncellendi (" + username + ")");
+  }
+
   async function cloudResetDatabase() {
     var client = getSupabaseClient();
     if (!client) return;
@@ -489,13 +538,18 @@ document.addEventListener("DOMContentLoaded", function () {
     return res.data;
   }
 
+  var previousActiveTabId = "tab-snippets";
+
   async function fetchPublicSnippets() {
     var client = getSupabaseClient();
     if (!client) {
       return cachedSnippets || [];
     }
     var t0 = performance.now();
-    var res = await client.from("snippets").select("*, users(username, email)").eq("is_public", true).order("created_at", { ascending: false });
+    var res = await client.from("snippets").select("*, users(username, avatar_url, bio, email)").eq("is_public", true).order("created_at", { ascending: false });
+    if (res.error) {
+      res = await client.from("snippets").select("*, users(username, email)").eq("is_public", true).order("created_at", { ascending: false });
+    }
     if (res.error) {
       res = await client.from("snippets").select("*").eq("is_public", true).order("created_at", { ascending: false });
     }
@@ -543,6 +597,87 @@ document.addEventListener("DOMContentLoaded", function () {
     document.body.removeChild(ta);
   }
 
+  function createSnippetCardElement(snippet) {
+    var card = document.createElement("div");
+    card.className = "snippet-card";
+    card.setAttribute("data-expertise", snippet.expertise_area || "");
+
+    var authorName = "Anonim";
+    var avatarUrl = "";
+    if (snippet.users) {
+      if (snippet.users.username) {
+        authorName = snippet.users.username;
+      } else if (snippet.users.email) {
+        authorName = snippet.users.email.split("@")[0];
+      }
+      if (snippet.users.avatar_url) {
+        avatarUrl = snippet.users.avatar_url.trim();
+      }
+    } else if (snippet.author_name) {
+      authorName = snippet.author_name;
+    }
+
+    var authorLetter = authorName.trim().charAt(0).toUpperCase();
+    var dateStr = formatReadableDate(snippet.created_at);
+    var escapedCode = escapeHtml(snippet.code_content || "");
+    var escapedAuthor = escapeHtml(authorName);
+
+    var avatarHtml = "";
+    if (avatarUrl) {
+      avatarHtml = '<img class="snippet-author-avatar-img" src="' + escapeHtml(avatarUrl) + '" alt="' + escapedAuthor + '">';
+    } else {
+      avatarHtml = '<div class="snippet-author-avatar">' + authorLetter + '</div>';
+    }
+
+    card.innerHTML =
+      '<div class="snippet-card-header">' +
+        '<div class="snippet-card-meta">' +
+          '<div class="snippet-card-title">' + escapeHtml(snippet.title || "Basliksiz") + '</div>' +
+          '<div class="snippet-card-info">' +
+            '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
+      '</div>' +
+      '<div class="snippet-code-block">' +
+        '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
+        '<pre><code>' + escapedCode + '</code></pre>' +
+      '</div>' +
+      '<div class="snippet-card-footer">' +
+        '<button type="button" class="snippet-author-btn" data-username="' + escapedAuthor + '">' +
+          avatarHtml +
+          '<span>' + escapedAuthor + '</span>' +
+        '</button>' +
+        '<span class="snippet-date">' + dateStr + '</span>' +
+      '</div>';
+
+    var copyBtn = card.querySelector(".snippet-copy-btn");
+    if (copyBtn) {
+      (function (btn, rawCode) {
+        btn.addEventListener("click", function () {
+          copyTextToClipboard(rawCode, function () {
+            btn.innerText = "Kopyalandi";
+            setTimeout(function () {
+              btn.innerText = "Kopyala";
+            }, 2000);
+          });
+        });
+      })(copyBtn, snippet.code_content || "");
+    }
+
+    var authorBtn = card.querySelector(".snippet-author-btn");
+    if (authorBtn && authorName !== "Anonim") {
+      (function (btn, username) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          loadUserProfile(username);
+        });
+      })(authorBtn, authorName);
+    }
+
+    return card;
+  }
+
   function renderSnippetsFeed(snippets) {
     var feed = document.getElementById("snippets-feed");
     var emptyEl = document.getElementById("snippets-empty");
@@ -571,59 +706,137 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     list.forEach(function (snippet) {
-      var card = document.createElement("div");
-      card.className = "snippet-card";
-      card.setAttribute("data-expertise", snippet.expertise_area || "");
-
-      var authorName = "Anonim";
-      if (snippet.users && snippet.users.username) {
-        authorName = snippet.users.username;
-      } else if (snippet.users && snippet.users.email) {
-        authorName = snippet.users.email.split("@")[0];
-      }
-      var authorLetter = authorName.trim().charAt(0).toUpperCase();
-      var dateStr = formatReadableDate(snippet.created_at);
-      var escapedCode = escapeHtml(snippet.code_content || "");
-
-      card.innerHTML =
-        '<div class="snippet-card-header">' +
-          '<div class="snippet-card-meta">' +
-            '<div class="snippet-card-title">' + escapeHtml(snippet.title || "Basliklsiz") + '</div>' +
-            '<div class="snippet-card-info">' +
-              '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
-            '</div>' +
-          '</div>' +
-          '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
-        '</div>' +
-        '<div class="snippet-code-block">' +
-          '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
-          '<pre><code>' + escapedCode + '</code></pre>' +
-        '</div>' +
-        '<div class="snippet-card-footer">' +
-          '<div class="snippet-author">' +
-            '<div class="snippet-author-avatar">' + authorLetter + '</div>' +
-            '<span>' + escapeHtml(authorName) + '</span>' +
-          '</div>' +
-          '<span class="snippet-date">' + dateStr + '</span>' +
-        '</div>';
-
+      var card = createSnippetCardElement(snippet);
       feed.appendChild(card);
-
-      var copyBtn = card.querySelector(".snippet-copy-btn");
-      if (copyBtn) {
-        (function (btn, rawCode) {
-          btn.addEventListener("click", function () {
-            copyTextToClipboard(rawCode, function () {
-              btn.innerText = "Kopyalandi";
-              setTimeout(function () {
-                btn.innerText = "Kopyala";
-              }, 2000);
-            });
-          });
-        })(copyBtn, snippet.code_content || "");
-      }
     });
   }
+
+  async function loadUserProfile(username) {
+    if (!username || username === "Anonim") return;
+    addLog("Kullanici profili yukleniyor: " + username);
+
+    var currentActiveSidebar = document.querySelector(".sidebar-item.active");
+    if (currentActiveSidebar) {
+      var prevTab = currentActiveSidebar.getAttribute("data-tab");
+      if (prevTab) previousActiveTabId = prevTab;
+    }
+
+    var tabPanels = document.querySelectorAll(".tab-panel");
+    tabPanels.forEach(function (p) {
+      p.classList.remove("active");
+      p.style.display = "none";
+    });
+    var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
+    sidebarItems.forEach(function (si) {
+      si.classList.remove("active");
+    });
+
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) {
+      profileView.style.display = "block";
+    }
+
+    var usernameEl = document.getElementById("public-profile-username");
+    var bioEl = document.getElementById("public-profile-bio");
+    var avatarImg = document.getElementById("public-profile-avatar-img");
+    var avatarFallback = document.getElementById("public-profile-avatar-fallback");
+    var snippetsContainer = document.getElementById("public-profile-snippets-feed");
+    var emptyEl = document.getElementById("public-profile-empty");
+    var countEl = document.getElementById("public-profile-snippet-count");
+
+    if (usernameEl) usernameEl.innerText = username;
+    if (bioEl) bioEl.innerText = "Profil bilgileri yukleniyor...";
+    if (avatarImg) avatarImg.style.display = "none";
+    if (avatarFallback) {
+      avatarFallback.style.display = "flex";
+      avatarFallback.innerText = username.charAt(0).toUpperCase();
+    }
+    if (snippetsContainer) snippetsContainer.innerHTML = "";
+    if (emptyEl) emptyEl.style.display = "none";
+
+    var client = getSupabaseClient();
+    var userData = null;
+
+    if (client) {
+      try {
+        var userRes = await client.from("users").select("id, username, email, bio, avatar_url, created_at").eq("username", username).maybeSingle();
+        if (!userRes.error && userRes.data) {
+          userData = userRes.data;
+        }
+      } catch (e) {}
+    }
+
+    if (!userData && cachedUsers) {
+      userData = cachedUsers.find(function (u) {
+        return (u.username && u.username.toLowerCase() === username.toLowerCase()) ||
+               (u.email && u.email.split("@")[0].toLowerCase() === username.toLowerCase());
+      });
+    }
+
+    if (userData) {
+      if (usernameEl) usernameEl.innerText = userData.username || username;
+      if (bioEl) {
+        bioEl.innerText = userData.bio ? userData.bio : "Bu kullanici henuz bir biyografi eklemedi.";
+      }
+      if (userData.avatar_url && userData.avatar_url.trim()) {
+        if (avatarImg) {
+          avatarImg.src = userData.avatar_url.trim();
+          avatarImg.style.display = "block";
+          avatarImg.onerror = function () {
+            avatarImg.style.display = "none";
+            if (avatarFallback) avatarFallback.style.display = "flex";
+          };
+        }
+        if (avatarFallback) avatarFallback.style.display = "none";
+      } else {
+        if (avatarImg) avatarImg.style.display = "none";
+        if (avatarFallback) {
+          avatarFallback.style.display = "flex";
+          avatarFallback.innerText = (userData.username || username).charAt(0).toUpperCase();
+        }
+      }
+    } else {
+      if (bioEl) bioEl.innerText = "Bu kullanici henuz bir biyografi eklemedi.";
+    }
+
+    var snippetsData = [];
+    if (client && userData && userData.id) {
+      try {
+        var snipRes = await client.from("snippets").select("*, users(username, avatar_url, bio, email)").eq("user_id", userData.id).eq("is_public", true).order("created_at", { ascending: false });
+        if (!snipRes.error && snipRes.data) {
+          snippetsData = snipRes.data;
+        }
+      } catch (e) {}
+    }
+
+    if (snippetsData.length === 0 && cachedSnippets) {
+      snippetsData = cachedSnippets.filter(function (s) {
+        if (userData && s.user_id && s.user_id === userData.id) return true;
+        if (s.users && s.users.username && s.users.username.toLowerCase() === username.toLowerCase()) return true;
+        if (s.users && s.users.email && s.users.email.split("@")[0].toLowerCase() === username.toLowerCase()) return true;
+        return false;
+      });
+    }
+
+    if (countEl) {
+      countEl.innerText = snippetsData.length + " Kod Parcacigi";
+    }
+
+    if (snippetsContainer) {
+      snippetsContainer.innerHTML = "";
+      if (snippetsData.length === 0) {
+        if (emptyEl) emptyEl.style.display = "block";
+      } else {
+        if (emptyEl) emptyEl.style.display = "none";
+        snippetsData.forEach(function (snip) {
+          snippetsContainer.appendChild(createSnippetCardElement(snip));
+        });
+      }
+    }
+
+    addLog(username + " profil sayfasi acildi (" + snippetsData.length + " snippet)");
+  }
+  window.loadUserProfile = loadUserProfile;
 
   var expertiseFilter = document.getElementById("expertise-filter");
   if (expertiseFilter) {
@@ -1105,55 +1318,101 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  function populateSettings() {
+  function populateEditProfile() {
     if (!currentUser) return;
-    var un = document.getElementById("set-username");
-    var em = document.getElementById("set-email");
-    var pw = document.getElementById("set-password");
-    if (un) un.value = currentUser.username || "";
-    if (em) em.value = currentUser.email || "";
-    if (pw) pw.value = "";
-    hideAlert("settings-alert");
+    var userInCache = cachedUsers.find(function (u) {
+      return (currentUser.id && u.id === currentUser.id) || (u.email && u.email === currentUser.email);
+    });
+
+    var usernameVal = (userInCache && userInCache.username) || currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "");
+    var bioVal = (userInCache && userInCache.bio) || currentUser.bio || "";
+    var avatarVal = (userInCache && userInCache.avatar_url) || currentUser.avatar_url || "";
+
+    var editUsername = document.getElementById("edit-username");
+    var editBio = document.getElementById("edit-bio");
+    var editAvatarUrl = document.getElementById("edit-avatar-url");
+    var bioCharNum = document.getElementById("bio-char-num");
+
+    if (editUsername) editUsername.value = usernameVal;
+    if (editBio) {
+      editBio.value = bioVal;
+      if (bioCharNum) bioCharNum.innerText = bioVal.length;
+    }
+    if (editAvatarUrl) editAvatarUrl.value = avatarVal;
+    hideAlert("edit-profile-alert");
   }
 
-  var settingsForm = document.getElementById("settings-form");
-  if (settingsForm) {
-    settingsForm.addEventListener("submit", async function (e) {
-      e.preventDefault();
-      hideAlert("settings-alert");
-      var btn = document.getElementById("settings-submit-btn");
-      var newName = document.getElementById("set-username").value.trim();
-      var newPass = document.getElementById("set-password").value.trim();
-
-      if (!newName) {
-        showAlert("settings-alert", "Kullanici adi bos birakilamaz.", "error");
-        return;
+  var editBioEl = document.getElementById("edit-bio");
+  if (editBioEl) {
+    editBioEl.addEventListener("input", function () {
+      var numEl = document.getElementById("bio-char-num");
+      if (numEl) {
+        numEl.innerText = this.value.length;
       }
-      if (newPass && newPass.length < 6) {
-        showAlert("settings-alert", "Yeni sifre en az 6 karakter olmalidir.", "error");
+    });
+  }
+
+  var editProfileForm = document.getElementById("edit-profile-form");
+  if (editProfileForm) {
+    editProfileForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      hideAlert("edit-profile-alert");
+      var btn = document.getElementById("edit-profile-submit-btn");
+      var newUsername = document.getElementById("edit-username").value.trim();
+      var newBio = document.getElementById("edit-bio").value.trim();
+      var newAvatarUrl = document.getElementById("edit-avatar-url").value.trim();
+
+      if (!newUsername) {
+        showAlert("edit-profile-alert", "Kullanici adi bos birakilamaz.", "error");
         return;
       }
 
       if (btn) {
         btn.disabled = true;
-        btn.innerText = "Bulutta Guncelleniyor...";
+        btn.innerText = "Kaydediliyor...";
       }
 
       try {
-        await cloudUpdateUser(newName, newPass);
-        updateDashHeader();
-        updateNavState();
-        addLog("Profil ayarlari bulut sunucusunda guncellendi (" + newName + ")");
-        showAlert("settings-alert", "Profil bilgileri bulut uzerinde guncellendi.", "success");
+        await updateUserProfile(newUsername, newBio, newAvatarUrl);
+        showAlert("edit-profile-alert", "Profil basariyla guncellendi.", "success");
         await refreshDashboardData();
       } catch (err) {
-        showAlert("settings-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
+        showAlert("edit-profile-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
       } finally {
         if (btn) {
           btn.disabled = false;
           btn.innerText = "Degisiklikleri Kaydet";
         }
       }
+    });
+  }
+
+  var btnBackFromProfile = document.getElementById("btn-back-from-profile");
+  if (btnBackFromProfile) {
+    btnBackFromProfile.addEventListener("click", function () {
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) {
+        profileView.style.display = "none";
+      }
+      var targetTabId = previousActiveTabId || "tab-snippets";
+      var tabPanels = document.querySelectorAll(".tab-panel");
+      tabPanels.forEach(function (p) {
+        p.style.display = "";
+        p.classList.remove("active");
+      });
+      var targetPanel = document.getElementById(targetTabId);
+      if (targetPanel) {
+        targetPanel.classList.add("active");
+      }
+      var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
+      sidebarItems.forEach(function (si) {
+        if (si.getAttribute("data-tab") === targetTabId) {
+          si.classList.add("active");
+        } else {
+          si.classList.remove("active");
+        }
+      });
+      addLog("Profil sayfasindan geri donuldu");
     });
   }
 
@@ -1257,12 +1516,23 @@ document.addEventListener("DOMContentLoaded", function () {
     item.addEventListener("click", async function (e) {
       e.preventDefault();
       var tabId = this.getAttribute("data-tab");
+
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) {
+        profileView.style.display = "none";
+      }
+
       sidebarItems.forEach(function (si) { si.classList.remove("active"); });
       this.classList.add("active");
 
-      tabPanels.forEach(function (p) { p.classList.remove("active"); });
+      tabPanels.forEach(function (p) {
+        p.style.display = "";
+        p.classList.remove("active");
+      });
       var target = document.getElementById(tabId);
       if (target) target.classList.add("active");
+
+      previousActiveTabId = tabId;
 
       var tabName = this.innerText.trim();
       addLog(tabName + " sekmesine gecildi");
@@ -1274,8 +1544,8 @@ document.addEventListener("DOMContentLoaded", function () {
         renderDatabaseView(cachedUsers);
         renderLogs();
         await refreshDashboardData();
-      } else if (tabId === "tab-settings") {
-        populateSettings();
+      } else if (tabId === "tab-edit-profile") {
+        populateEditProfile();
       } else if (tabId === "tab-overview") {
         renderRecentUsers(cachedUsers);
         var isUserAdmin = currentUser && isAdmin(currentUser.email);
@@ -1295,6 +1565,17 @@ document.addEventListener("DOMContentLoaded", function () {
   async function refreshDashboardData() {
     try {
       var users = await cloudFetchUsers();
+      if (currentUser && users && users.length > 0) {
+        var selfInDb = users.find(function (u) {
+          return (currentUser.id && u.id === currentUser.id) || (u.email && u.email === currentUser.email);
+        });
+        if (selfInDb) {
+          if (selfInDb.username) currentUser.username = selfInDb.username;
+          if (selfInDb.bio !== undefined) currentUser.bio = selfInDb.bio;
+          if (selfInDb.avatar_url !== undefined) currentUser.avatar_url = selfInDb.avatar_url;
+        }
+      }
+
       var isUserAdmin = currentUser && isAdmin(currentUser.email);
       var statUsers = document.getElementById("stat-users");
       if (statUsers) statUsers.innerText = isUserAdmin ? users.length : 1;
@@ -1347,7 +1628,9 @@ document.addEventListener("DOMContentLoaded", function () {
       currentUser = {
         id: "admin-session",
         email: ADMIN_EMAIL,
-        username: "semih"
+        username: "semih",
+        bio: "",
+        avatar_url: ""
       };
     }
     applyRolePermissions();
@@ -1369,11 +1652,19 @@ document.addEventListener("DOMContentLoaded", function () {
     if (autoSyncInterval) clearInterval(autoSyncInterval);
     autoSyncInterval = setInterval(refreshDashboardData, 4000);
 
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) {
+      profileView.style.display = "none";
+    }
+
     sidebarItems.forEach(function (si) { si.classList.remove("active"); });
     var firstTab = document.querySelector('.sidebar-item[data-tab="tab-overview"]');
     if (firstTab) firstTab.classList.add("active");
 
-    tabPanels.forEach(function (p) { p.classList.remove("active"); });
+    tabPanels.forEach(function (p) {
+      p.style.display = "";
+      p.classList.remove("active");
+    });
     var overviewPanel = document.getElementById("tab-overview");
     if (overviewPanel) overviewPanel.classList.add("active");
   }
@@ -1385,11 +1676,15 @@ document.addEventListener("DOMContentLoaded", function () {
         var res = await client.auth.getSession();
         if (res.data && res.data.session) {
           var u = res.data.session.user;
-          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.email ? u.email.split("@")[0] : "Kullanici");
+          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.user_metadata && u.user_metadata.full_name) || (u && u.email ? u.email.split("@")[0] : "Kullanici");
+          var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
+          var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || (u && u.user_metadata && u.user_metadata.avatar) || "";
           currentUser = {
             id: u.id,
             email: u.email,
-            username: metaName
+            username: metaName,
+            bio: metaBio,
+            avatar_url: metaAvatar
           };
           showView("dashboard");
           return;
@@ -1400,10 +1695,14 @@ document.addEventListener("DOMContentLoaded", function () {
         if (event === "SIGNED_IN" && session && session.user) {
           var u = session.user;
           var metaName = (u.user_metadata && u.user_metadata.username) || (u.user_metadata && u.user_metadata.full_name) || (u.user_metadata && u.user_metadata.preferred_username) || u.email.split("@")[0];
+          var metaBio = (u.user_metadata && u.user_metadata.bio) || "";
+          var metaAvatar = (u.user_metadata && u.user_metadata.avatar_url) || (u.user_metadata && u.user_metadata.avatar) || "";
           currentUser = {
             id: u.id,
             email: u.email,
-            username: metaName
+            username: metaName,
+            bio: metaBio,
+            avatar_url: metaAvatar
           };
           var provider = (u.app_metadata && u.app_metadata.provider) || "email";
           if (provider === "github") {
@@ -1417,6 +1716,8 @@ document.addEventListener("DOMContentLoaded", function () {
                   username: metaName,
                   email: u.email,
                   role: userRole,
+                  bio: metaBio,
+                  avatar_url: metaAvatar,
                   created_at: new Date().toISOString()
                 }]);
                 addLog("GitHub OAuth ile yeni kullanici kaydedildi: " + metaName);
@@ -1428,10 +1729,14 @@ document.addEventListener("DOMContentLoaded", function () {
         } else if (session && session.user) {
           var u2 = session.user;
           var metaName2 = (u2.user_metadata && u2.user_metadata.username) || (u2.user_metadata && u2.user_metadata.preferred_username) || u2.email.split("@")[0];
+          var metaBio2 = (u2.user_metadata && u2.user_metadata.bio) || "";
+          var metaAvatar2 = (u2.user_metadata && u2.user_metadata.avatar_url) || (u2.user_metadata && u2.user_metadata.avatar) || "";
           currentUser = {
             id: u2.id,
             email: u2.email,
-            username: metaName2
+            username: metaName2,
+            bio: metaBio2,
+            avatar_url: metaAvatar2
           };
           updateNavState();
         } else {
