@@ -166,6 +166,37 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
+  function showToast(message, duration) {
+    if (!message) return;
+    var container = document.getElementById("toast-container");
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "toast-container";
+      container.className = "toast-container";
+      container.setAttribute("aria-live", "polite");
+      document.body.appendChild(container);
+    }
+    var toast = document.createElement("div");
+    toast.className = "toast";
+    toast.innerHTML = '<span class="toast-message">' + escapeHtml(message) + '</span>';
+    container.appendChild(toast);
+
+    requestAnimationFrame(function () {
+      toast.classList.add("toast-show");
+    });
+
+    var time = duration || 2400;
+    setTimeout(function () {
+      toast.classList.remove("toast-show");
+      toast.classList.add("toast-hide");
+      setTimeout(function () {
+        if (toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 250);
+    }, time);
+  }
+
   function setMetricApi(ms) {
     var el = document.getElementById("metric-api");
     if (el) el.innerText = ms + " ms";
@@ -580,6 +611,19 @@ document.addEventListener("DOMContentLoaded", function () {
     if (res && res.error) throw res.error;
   }
 
+  async function cloudDeleteSnippet(snippetId) {
+    var client = getSupabaseClient();
+    if (!client || !snippetId) {
+      throw new Error("Supabase baglantisi veya kod ID'si bulunamadi.");
+    }
+    var t0 = performance.now();
+    var res = await client.from("snippets").delete().eq("id", snippetId);
+    var t1 = performance.now();
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
+    if (res.error) throw res.error;
+    return true;
+  }
+
   async function updateUserProfile(newUsername, newAvatarUrl, newBio) {
     var client = getSupabaseClient();
     if (!client || !currentUser) {
@@ -914,7 +958,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function getVotedSnippets() {
     try {
-      var raw = localStorage.getItem("sniphub_voted_snippets");
+      var key = currentUser && currentUser.id ? ("sniphub_voted_" + currentUser.id) : "sniphub_voted_snippets";
+      var raw = localStorage.getItem(key);
       return raw ? JSON.parse(raw) : [];
     } catch (e) { return []; }
   }
@@ -923,8 +968,19 @@ document.addEventListener("DOMContentLoaded", function () {
     var voted = getVotedSnippets();
     if (voted.indexOf(snippetId) === -1) {
       voted.push(snippetId);
-      try { localStorage.setItem("sniphub_voted_snippets", JSON.stringify(voted)); } catch (e) {}
+      try {
+        var key = currentUser && currentUser.id ? ("sniphub_voted_" + currentUser.id) : "sniphub_voted_snippets";
+        localStorage.setItem(key, JSON.stringify(voted));
+      } catch (e) {}
     }
+  }
+
+  function removeVotedSnippet(snippetId) {
+    var voted = getVotedSnippets().filter(function (id) { return String(id) !== String(snippetId); });
+    try {
+      var key = currentUser && currentUser.id ? ("sniphub_voted_" + currentUser.id) : "sniphub_voted_snippets";
+      localStorage.setItem(key, JSON.stringify(voted));
+    } catch (e) {}
   }
 
   function hasVotedSnippet(snippetId) {
@@ -951,6 +1007,16 @@ document.addEventListener("DOMContentLoaded", function () {
     } catch (e) {}
   }
 
+  async function decrementUpvote(snippetId) {
+    var client = getSupabaseClient();
+    if (!client || !snippetId) return;
+    try {
+      var res = await client.from("snippets").select("upvotes").eq("id", snippetId).maybeSingle();
+      var current = (res && res.data && typeof res.data.upvotes === "number") ? res.data.upvotes : 1;
+      await client.from("snippets").update({ upvotes: Math.max(0, current - 1) }).eq("id", snippetId);
+    } catch (e) {}
+  }
+
   function isTrending(snippet) {
     var copies = (typeof snippet.copy_count === "number") ? snippet.copy_count : 0;
     var votes = (typeof snippet.upvotes === "number") ? snippet.upvotes : 0;
@@ -971,7 +1037,11 @@ document.addEventListener("DOMContentLoaded", function () {
     var escapedCode = escapeHtml(snippet.code_content || "");
 
     var isOwner = currentUser && authorUserId && (String(currentUser.id) === String(authorUserId));
-    var editBtnHtml = isOwner ? '<button class="snippet-edit-btn" id="btn-edit-snippet" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Duzenle</button>' : "";
+    var isAdminUser = currentUser && currentUser.role === "admin";
+    var canDelete = isOwner || isAdminUser;
+
+    var editBtnHtml = isOwner ? '<button type="button" class="snippet-edit-btn" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Duzenle</button>' : "";
+    var deleteBtnHtml = canDelete ? '<button type="button" class="snippet-delete-btn" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Sil</button>' : "";
 
     var avatarHtml = "";
     if (authorAvatarUrl) {
@@ -1012,7 +1082,8 @@ document.addEventListener("DOMContentLoaded", function () {
       '<div class="snippet-code-block">' +
         '<div class="snippet-code-actions">' +
           editBtnHtml +
-          '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
+          deleteBtnHtml +
+          '<button type="button" class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
         '</div>' +
         '<pre><code>' + escapedCode + '</code></pre>' +
       '</div>' +
@@ -1048,6 +1119,32 @@ document.addEventListener("DOMContentLoaded", function () {
       });
     }
 
+    var deleteBtn = card.querySelector(".snippet-delete-btn");
+    if (deleteBtn) {
+      (function (btn, snipId, snipObj) {
+        btn.addEventListener("click", async function (e) {
+          e.preventDefault();
+          if (!confirm("Bu kod parcacigini kalici olarak silmek istediginizden emin misiniz?")) {
+            return;
+          }
+          btn.disabled = true;
+          btn.innerText = "Siliniyor...";
+          try {
+            await cloudDeleteSnippet(snipId);
+            showToast("Kod parcacigi silindi");
+            addLog("Kod parcacigi silindi: " + (snipObj.title || snipId));
+            card.remove();
+            cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== String(snipId); });
+            await updateSnippetCount();
+          } catch (err) {
+            btn.disabled = false;
+            btn.innerText = "Sil";
+            showToast("Silme islemi basarisiz: " + (err.message || err));
+          }
+        });
+      })(deleteBtn, snippet.id, snippet);
+    }
+
     var copyBtn = card.querySelector(".snippet-copy-btn");
     if (copyBtn) {
       (function (btn, rawCode, snipId, snipObj) {
@@ -1055,6 +1152,7 @@ document.addEventListener("DOMContentLoaded", function () {
           copyTextToClipboard(rawCode, function () {
             btn.innerText = "Kopyalandi";
             setTimeout(function () { btn.innerText = "Kopyala"; }, 2000);
+            showToast("Kod kopyalandi");
 
             if (snipId) {
               incrementCopyCount(snipId);
@@ -1079,22 +1177,35 @@ document.addEventListener("DOMContentLoaded", function () {
       (function (btn, snipId, snipObj) {
         btn.addEventListener("click", function () {
           if (!currentUser) {
-            alert("Oy vermek icin giris yapmaniz gerekiyor.");
+            showToast("Oy vermek icin giris yapmaniz gerekiyor");
             return;
           }
-          if (hasVotedSnippet(snipId)) {
-            return;
-          }
-          addVotedSnippet(snipId);
-          btn.classList.add("voted");
-          if (typeof snipObj.upvotes === "number") {
-            snipObj.upvotes = snipObj.upvotes + 1;
+          var currentlyVoted = hasVotedSnippet(snipId);
+          if (currentlyVoted) {
+            removeVotedSnippet(snipId);
+            btn.classList.remove("voted");
+            if (typeof snipObj.upvotes === "number") {
+              snipObj.upvotes = Math.max(0, snipObj.upvotes - 1);
+            } else {
+              snipObj.upvotes = 0;
+            }
+            var numEl = btn.querySelector(".upvote-num");
+            if (numEl) numEl.innerText = snipObj.upvotes;
+            decrementUpvote(snipId);
+            showToast("Begeni kaldirildi");
           } else {
-            snipObj.upvotes = 1;
+            addVotedSnippet(snipId);
+            btn.classList.add("voted");
+            if (typeof snipObj.upvotes === "number") {
+              snipObj.upvotes = snipObj.upvotes + 1;
+            } else {
+              snipObj.upvotes = 1;
+            }
+            var numEl = btn.querySelector(".upvote-num");
+            if (numEl) numEl.innerText = snipObj.upvotes;
+            incrementUpvote(snipId);
+            showToast("Begeni kaydedildi");
           }
-          var numEl = btn.querySelector(".upvote-num");
-          if (numEl) numEl.innerText = snipObj.upvotes;
-          incrementUpvote(snipId);
         });
       })(upvoteBtn, snippet.id, snippet);
     }
@@ -1490,12 +1601,14 @@ document.addEventListener("DOMContentLoaded", function () {
         try {
           await updateSnippet(editingSnippetId, title, language, expertiseArea, isPublic, codeContent);
           showAlert("snippet-alert", "Kod parcacigi basariyla guncellendi.", "success");
+          showToast("Kod parcacigi guncellendi");
           resetSnippetFormState();
           await fetchPublicSnippets();
           renderSnippetsFeed(cachedSnippets);
           await updateSnippetCount();
         } catch (err) {
           showAlert("snippet-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
+          showToast("Guncelleme hatasi: " + (err.message || err));
         } finally {
           if (submitBtn) {
             submitBtn.disabled = false;
@@ -1510,12 +1623,14 @@ document.addEventListener("DOMContentLoaded", function () {
         try {
           await insertSnippet(title, language, expertiseArea, isPublic, codeContent);
           showAlert("snippet-alert", "Kod parcacigi basariyla bulut sunucusuna kaydedildi.", "success");
+          showToast("Kod parcacigi kaydedildi");
           resetSnippetFormState();
           await fetchPublicSnippets();
           renderSnippetsFeed(cachedSnippets);
           await updateSnippetCount();
         } catch (err) {
           showAlert("snippet-alert", err.message || "Kayit sirasinda hata olustu.", "error");
+          showToast("Kayit hatasi: " + (err.message || err));
         } finally {
           if (submitBtn) {
             submitBtn.disabled = false;
@@ -2811,6 +2926,7 @@ document.addEventListener("DOMContentLoaded", function () {
             btnRandomCopy.innerHTML =
               '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Kopyala';
           }, 2000);
+          showToast("Kod kopyalandi");
           if (currentRandomSnippet.id) {
             incrementCopyCount(currentRandomSnippet.id);
           }
