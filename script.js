@@ -32,7 +32,6 @@ document.addEventListener("DOMContentLoaded", function () {
   var realtimeChannel = null;
   var snippetsRealtimeChannel = null;
   var activeExpertiseFilter = "all";
-  var lastRecentUsersSignature = "";
   var isRefreshingData = false;
 
   function isAdmin(email) {
@@ -1443,103 +1442,6 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  async function renderRecentUsers(users) {
-    var tbody = document.getElementById("recent-users");
-    if (!tbody) return;
-
-    var list = [];
-    if (users && users.length > 0) {
-      list = users.slice();
-    } else {
-      var client = getSupabaseClient();
-      if (client) {
-        try {
-          var res = await client.from("users").select("id, username, email, avatar_url, created_at").order("created_at", { ascending: false }).limit(10);
-          if (res.data && res.data.length > 0) {
-            list = res.data;
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (list.length === 0 && currentUser) {
-      list = [currentUser];
-    }
-
-    var seenIds = new Set();
-    var seenEmails = new Set();
-    var uniqueList = [];
-
-    for (var i = 0; i < list.length; i++) {
-      var u = list[i];
-      var uId = u.id ? String(u.id) : null;
-      var uEmail = (u.email || "").toLowerCase().trim();
-
-      if (uId && seenIds.has(uId)) continue;
-      if (uEmail && seenEmails.has(uEmail)) continue;
-
-      if (uId) seenIds.add(uId);
-      if (uEmail) seenEmails.add(uEmail);
-      uniqueList.push(u);
-
-      if (uniqueList.length >= 5) break;
-    }
-
-    var signature = uniqueList.map(function (u) {
-      return (u.id || "") + ":" + (u.username || "") + ":" + (u.email || "") + ":" + (u.avatar_url || "");
-    }).join("|");
-
-    if (signature === lastRecentUsersSignature && tbody.children.length > 0) {
-      return;
-    }
-    lastRecentUsersSignature = signature;
-
-    tbody.innerHTML = "";
-
-    if (uniqueList.length === 0) {
-      var emptyTr = document.createElement("tr");
-      emptyTr.innerHTML = '<td colspan="2" style="text-align:center; color:#94a3b8; padding:16px;">Henuz kayitli kullanici bulunmuyor.</td>';
-      tbody.appendChild(emptyTr);
-      return;
-    }
-
-    uniqueList.forEach(function (u) {
-      var tr = document.createElement("tr");
-      var displayName = u.username || (u.email ? u.email.split("@")[0] : "Gelistirici");
-      var letter = displayName.trim().charAt(0).toUpperCase() || "U";
-      var avatarUrl = (u.avatar_url || "").trim();
-
-      var avatarHtml = "";
-      if (avatarUrl) {
-        avatarHtml = '<img class="table-avatar-img" src="' + escapeHtml(avatarUrl) + '" alt="' + escapeHtml(displayName) + '">' +
-                     '<div class="table-avatar" style="display:none;">' + letter + '</div>';
-      } else {
-        avatarHtml = '<div class="table-avatar">' + letter + '</div>';
-      }
-
-      var td1 = document.createElement("td");
-      td1.innerHTML = '<div class="table-user-cell">' + avatarHtml + '<span>' + escapeHtml(displayName) + '</span></div>';
-
-      var td2 = document.createElement("td");
-      td2.className = "table-email";
-      td2.innerText = u.email || "";
-
-      tr.appendChild(td1);
-      tr.appendChild(td2);
-
-      var img = td1.querySelector(".table-avatar-img");
-      var fb = td1.querySelector(".table-avatar");
-      if (img && fb) {
-        img.onerror = function () {
-          img.style.display = "none";
-          fb.style.display = "flex";
-        };
-      }
-
-      tbody.appendChild(tr);
-    });
-  }
-
   function renderUsersTable(users) {
     var tbody = document.getElementById("manage-users-body");
     var emptyEl = document.getElementById("users-empty");
@@ -2156,49 +2058,159 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
   var tabPanels = document.querySelectorAll(".tab-panel");
+  var sidebarEl = document.getElementById("dashboard-sidebar");
+  var sidebarBackdropEl = document.getElementById("sidebar-backdrop");
+  var sidebarToggleBtn = document.getElementById("sidebar-toggle-btn");
+
+  function closeMobileSidebar() {
+    if (sidebarEl) sidebarEl.classList.remove("mobile-open");
+    if (sidebarBackdropEl) sidebarBackdropEl.classList.remove("active");
+  }
+
+  function toggleSidebar() {
+    if (window.innerWidth <= 768) {
+      if (sidebarEl) {
+        var isOpen = sidebarEl.classList.toggle("mobile-open");
+        if (sidebarBackdropEl) {
+          if (isOpen) sidebarBackdropEl.classList.add("active");
+          else sidebarBackdropEl.classList.remove("active");
+        }
+      }
+    } else {
+      if (sidebarEl) {
+        sidebarEl.classList.toggle("collapsed");
+      }
+    }
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      toggleSidebar();
+    });
+  }
+
+  if (sidebarBackdropEl) {
+    sidebarBackdropEl.addEventListener("click", function () {
+      closeMobileSidebar();
+    });
+  }
+
+  async function switchDashboardTab(tabId) {
+    sidebarItems.forEach(function (si) {
+      if (si.getAttribute("data-tab") === tabId) {
+        si.classList.add("active");
+      } else {
+        si.classList.remove("active");
+      }
+    });
+
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) {
+      profileView.style.display = "none";
+    }
+
+    tabPanels.forEach(function (p) { p.classList.remove("active"); });
+    var target = document.getElementById(tabId);
+    if (target) target.classList.add("active");
+
+    closeMobileSidebar();
+
+    var activeItem = document.querySelector('.sidebar-item[data-tab="' + tabId + '"]');
+    var tabName = activeItem ? activeItem.innerText.trim() : tabId;
+    addLog(tabName + " sekmesine gecildi");
+
+    if (tabId === "tab-users") {
+      renderUsersTable(cachedUsers);
+      await refreshDashboardData();
+    } else if (tabId === "tab-database") {
+      renderDatabaseView(cachedUsers);
+      renderLogs();
+      await refreshDashboardData();
+    } else if (tabId === "tab-edit-profile") {
+      populateEditProfile();
+    } else if (tabId === "tab-overview") {
+      await updateOverviewUserCount();
+      await updateSnippetCount();
+      await refreshDashboardData();
+    } else if (tabId === "tab-snippets") {
+      await fetchPublicSnippets();
+      renderSnippetsFeed(cachedSnippets);
+    } else if (tabId === "tab-add-snippet") {
+      resetSnippetFormState();
+      hideAlert("snippet-alert");
+      var titleInput = document.getElementById("snippet-title");
+      if (titleInput) {
+        setTimeout(function () { titleInput.focus(); }, 60);
+      }
+    }
+  }
 
   sidebarItems.forEach(function (item) {
     item.addEventListener("click", async function (e) {
       e.preventDefault();
       var tabId = this.getAttribute("data-tab");
-      sidebarItems.forEach(function (si) { si.classList.remove("active"); });
-      this.classList.add("active");
-
-      var profileView = document.getElementById("public-profile-view");
-      if (profileView) {
-        profileView.style.display = "none";
-      }
-
-      tabPanels.forEach(function (p) { p.classList.remove("active"); });
-      var target = document.getElementById(tabId);
-      if (target) target.classList.add("active");
-
-      var tabName = this.innerText.trim();
-      addLog(tabName + " sekmesine gecildi");
-
-      if (tabId === "tab-users") {
-        renderUsersTable(cachedUsers);
-        await refreshDashboardData();
-      } else if (tabId === "tab-database") {
-        renderDatabaseView(cachedUsers);
-        renderLogs();
-        await refreshDashboardData();
-      } else if (tabId === "tab-edit-profile") {
-        populateEditProfile();
-      } else if (tabId === "tab-overview") {
-        await updateOverviewUserCount();
-        await updateSnippetCount();
-        await renderRecentUsers(cachedUsers);
-        await refreshDashboardData();
-      } else if (tabId === "tab-snippets") {
-        await fetchPublicSnippets();
-        renderSnippetsFeed(cachedSnippets);
-      } else if (tabId === "tab-add-snippet") {
-        resetSnippetFormState();
-        hideAlert("snippet-alert");
-      }
+      await switchDashboardTab(tabId);
     });
   });
+
+  var btnHeroQuickStart = document.getElementById("btn-hero-quick-start");
+  if (btnHeroQuickStart) {
+    btnHeroQuickStart.addEventListener("click", function () {
+      switchDashboardTab("tab-add-snippet");
+      addLog("Rehber: Ilk kod olusturma formuna gidildi");
+    });
+  }
+
+  var btnHeroExplore = document.getElementById("btn-hero-explore");
+  if (btnHeroExplore) {
+    btnHeroExplore.addEventListener("click", function () {
+      switchDashboardTab("tab-snippets");
+      addLog("Rehber: Topluluk kodlarini kesfet sekmesine gidildi");
+    });
+  }
+
+  var stepCardAdd = document.getElementById("step-card-add");
+  if (stepCardAdd) {
+    stepCardAdd.addEventListener("click", function () {
+      switchDashboardTab("tab-add-snippet");
+      addLog("Rehber: Kod paylas adimi secildi");
+    });
+    stepCardAdd.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        switchDashboardTab("tab-add-snippet");
+      }
+    });
+  }
+
+  var stepCardExplore = document.getElementById("step-card-explore");
+  if (stepCardExplore) {
+    stepCardExplore.addEventListener("click", function () {
+      switchDashboardTab("tab-snippets");
+      addLog("Rehber: Kod kesfet adimi secildi");
+    });
+    stepCardExplore.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        switchDashboardTab("tab-snippets");
+      }
+    });
+  }
+
+  var stepCardProfile = document.getElementById("step-card-profile");
+  if (stepCardProfile) {
+    stepCardProfile.addEventListener("click", function () {
+      switchDashboardTab("tab-edit-profile");
+      addLog("Rehber: Profil ozellestir adimi secildi");
+    });
+    stepCardProfile.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        switchDashboardTab("tab-edit-profile");
+      }
+    });
+  }
 
   async function refreshDashboardData() {
     if (isRefreshingData) return;
@@ -2219,7 +2231,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
       var users = await cloudFetchUsers();
       await updateOverviewUserCount();
-      await renderRecentUsers(users);
       renderUsersTable(users);
       renderDatabaseView(users);
       renderLogs();
