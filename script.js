@@ -32,6 +32,8 @@ document.addEventListener("DOMContentLoaded", function () {
   var realtimeChannel = null;
   var snippetsRealtimeChannel = null;
   var activeExpertiseFilter = "all";
+  var lastRecentUsersSignature = "";
+  var isRefreshingData = false;
 
   function isAdmin(email) {
     if (!email) return false;
@@ -245,14 +247,102 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!currentUser) return;
     var navUsername = document.getElementById("nav-username");
     var navAvatar = document.getElementById("nav-avatar");
-    var isUserAdmin = isAdmin(currentUser.email);
-    var roleBadgeText = isUserAdmin ? " (Yonetici)" : " (Kullanici)";
-    var displayName = (currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Kullanici")) + roleBadgeText;
+    var dropName = document.getElementById("dropdown-user-name");
+    var dropEmail = document.getElementById("dropdown-user-email");
+
+    var displayName = currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Kullanici");
+    var emailStr = currentUser.email || "kullanici@sniphub.io";
+    var avatarUrl = (currentUser.avatar_url || "").trim();
+    var letter = displayName.trim().charAt(0).toUpperCase() || "U";
+
     if (navUsername) navUsername.innerText = displayName;
+    if (dropName) dropName.innerText = displayName;
+    if (dropEmail) dropEmail.innerText = emailStr;
+
     if (navAvatar) {
-      var letter = (currentUser.username || currentUser.email || "K").trim().charAt(0).toUpperCase();
-      navAvatar.innerText = letter;
+      if (avatarUrl) {
+        navAvatar.innerHTML = '<img class="nav-avatar-img" src="' + escapeHtml(avatarUrl) + '" alt="' + escapeHtml(displayName) + '">';
+        var img = navAvatar.querySelector("img");
+        if (img) {
+          img.onerror = function () {
+            navAvatar.innerHTML = letter;
+          };
+        }
+      } else {
+        navAvatar.innerText = letter;
+      }
     }
+  }
+
+  var navUserTrigger = document.getElementById("nav-user-trigger");
+  var navDropdownMenu = document.getElementById("nav-dropdown-menu");
+  var dropdownMyProfile = document.getElementById("dropdown-item-my-profile");
+  var dropdownEditProfile = document.getElementById("dropdown-item-edit-profile");
+  var dropdownLogout = document.getElementById("dropdown-logout-btn");
+
+  if (navUserTrigger && navDropdownMenu) {
+    navUserTrigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var isShown = navDropdownMenu.classList.contains("show");
+      if (isShown) {
+        navDropdownMenu.classList.remove("show");
+        navUserTrigger.classList.remove("active");
+      } else {
+        navDropdownMenu.classList.add("show");
+        navUserTrigger.classList.add("active");
+      }
+    });
+
+    document.addEventListener("click", function (e) {
+      if (!navUserTrigger.contains(e.target) && !navDropdownMenu.contains(e.target)) {
+        navDropdownMenu.classList.remove("show");
+        navUserTrigger.classList.remove("active");
+      }
+    });
+  }
+
+  if (dropdownMyProfile) {
+    dropdownMyProfile.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (navDropdownMenu) navDropdownMenu.classList.remove("show");
+      if (navUserTrigger) navUserTrigger.classList.remove("active");
+      if (currentUser && currentUser.id) {
+        loadUserProfile(currentUser.id);
+      }
+    });
+  }
+
+  if (dropdownEditProfile) {
+    dropdownEditProfile.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (navDropdownMenu) navDropdownMenu.classList.remove("show");
+      if (navUserTrigger) navUserTrigger.classList.remove("active");
+
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) profileView.style.display = "none";
+
+      var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
+      var tabPanels = document.querySelectorAll(".tab-panel");
+      sidebarItems.forEach(function (si) { si.classList.remove("active"); });
+      tabPanels.forEach(function (p) { p.classList.remove("active"); });
+
+      var editPanel = document.getElementById("tab-edit-profile");
+      if (editPanel) editPanel.classList.add("active");
+
+      populateEditProfile();
+      addLog("Profili Duzenle sekmesine gecildi");
+    });
+  }
+
+  if (dropdownLogout) {
+    dropdownLogout.addEventListener("click", async function (e) {
+      e.preventDefault();
+      if (navDropdownMenu) navDropdownMenu.classList.remove("show");
+      if (navUserTrigger) navUserTrigger.classList.remove("active");
+      await cloudSignOut();
+      addLog("Oturum kapatildi");
+      showView("landing");
+    });
   }
 
   document.querySelectorAll("[data-view]").forEach(function (el) {
@@ -385,6 +475,7 @@ document.addEventListener("DOMContentLoaded", function () {
       } catch (e) {}
     }
     currentUser = null;
+    resetSnippetFormState();
     updateNavState();
   }
 
@@ -497,6 +588,7 @@ document.addEventListener("DOMContentLoaded", function () {
       throw new Error("Oturum acik degil.");
     }
     var t0 = performance.now();
+    var authorName = currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Gelistirici");
     var record = {
       user_id: currentUser.id,
       title: title,
@@ -546,14 +638,21 @@ document.addEventListener("DOMContentLoaded", function () {
     var t0 = performance.now();
     var res = await client
       .from("snippets")
-      .select("*, users:user_id(username, avatar_url, bio)")
+      .select("*, users:user_id(id, username, avatar_url, bio)")
       .eq("is_public", true)
       .order("created_at", { ascending: false });
 
     if (res.error) {
       res = await client
         .from("snippets")
-        .select("*, users(username, avatar_url, bio)")
+        .select("*, users(id, username, avatar_url, bio)")
+        .eq("is_public", true)
+        .order("created_at", { ascending: false });
+    }
+    if (res.error) {
+      res = await client
+        .from("snippets")
+        .select("*, profiles:user_id(id, username, full_name, avatar_url, bio)")
         .eq("is_public", true)
         .order("created_at", { ascending: false });
     }
@@ -563,12 +662,6 @@ document.addEventListener("DOMContentLoaded", function () {
         .select("*")
         .eq("is_public", true)
         .order("created_at", { ascending: false });
-    }
-    if (res.error) {
-      res = await client
-        .from("snippets")
-        .select("*")
-        .eq("is_public", true);
     }
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
@@ -580,6 +673,48 @@ document.addEventListener("DOMContentLoaded", function () {
     var data = res.data || [];
     cachedSnippets = data;
     return data;
+  }
+
+  function resolveSnippetAuthor(snippet, allUsers) {
+    var uInfo = snippet.users || snippet.profiles || null;
+    if (Array.isArray(uInfo) && uInfo.length > 0) uInfo = uInfo[0];
+
+    var authorUserId = snippet.user_id || "";
+    var authorName = "";
+    var authorAvatarUrl = "";
+    var authorBio = "";
+
+    if (uInfo) {
+      authorName = uInfo.username || uInfo.full_name || uInfo.name || "";
+      authorAvatarUrl = uInfo.avatar_url || "";
+      authorBio = uInfo.bio || "";
+    }
+
+    if (!authorName && authorUserId && allUsers && allUsers.length > 0) {
+      var matched = allUsers.find(function (u) { return String(u.id) === String(authorUserId); });
+      if (matched) {
+        authorName = matched.username || matched.full_name || (matched.email ? matched.email.split("@")[0] : "");
+        authorAvatarUrl = authorAvatarUrl || matched.avatar_url || "";
+        authorBio = authorBio || matched.bio || "";
+      }
+    }
+
+    if (!authorName && currentUser && String(currentUser.id) === String(authorUserId)) {
+      authorName = currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "");
+      authorAvatarUrl = authorAvatarUrl || currentUser.avatar_url || "";
+      authorBio = authorBio || currentUser.bio || "";
+    }
+
+    if (!authorName) {
+      authorName = snippet.author_name || (authorUserId ? ("Dev_" + String(authorUserId).substring(0, 5)) : "Gelistirici");
+    }
+
+    return {
+      authorName: authorName,
+      authorAvatarUrl: authorAvatarUrl || "",
+      authorBio: authorBio,
+      authorUserId: authorUserId
+    };
   }
 
   function copyTextToClipboard(text, onSuccess) {
@@ -619,6 +754,9 @@ document.addEventListener("DOMContentLoaded", function () {
     if (profileView) {
       profileView.style.display = "none";
     }
+
+    var tabPanels = document.querySelectorAll(".tab-panel");
+    var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
 
     tabPanels.forEach(function (p) { p.classList.remove("active"); });
     sidebarItems.forEach(function (si) { si.classList.remove("active"); });
@@ -666,10 +804,19 @@ document.addEventListener("DOMContentLoaded", function () {
     if (formDesc) formDesc.innerText = "Kodunuzu toplulukla paylasin veya Claude AI ile optimize edin.";
     var submitBtn = document.getElementById("snippet-submit-btn");
     if (submitBtn) submitBtn.innerText = "Kod Parcacigini Kaydet";
-    var sForm = document.getElementById("snippet-form");
-    if (sForm) sForm.reset();
+
+    var titleInput = document.getElementById("snippet-title");
+    var langInput = document.getElementById("snippet-language");
+    var expertiseSelect = document.getElementById("expertise-select");
     var publicCheckbox = document.getElementById("snippet-public");
+    var codeTextarea = document.getElementById("snippet-code");
+
+    if (titleInput) titleInput.value = "";
+    if (langInput) langInput.value = "";
+    if (expertiseSelect) expertiseSelect.value = "";
     if (publicCheckbox) publicCheckbox.checked = true;
+    if (codeTextarea) codeTextarea.value = "";
+
     hideAlert("snippet-alert");
   }
 
@@ -678,11 +825,11 @@ document.addEventListener("DOMContentLoaded", function () {
     card.className = "snippet-card";
     card.setAttribute("data-expertise", snippet.expertise_area || "");
 
-    var uInfo = snippet.users || {};
-    var authorName = uInfo.username || snippet.author_name || "Anonim";
-    var authorAvatarUrl = (uInfo.avatar_url || snippet.author_avatar_url || "").trim();
+    var authorInfo = resolveSnippetAuthor(snippet, cachedUsers);
+    var authorName = authorInfo.authorName;
+    var authorAvatarUrl = authorInfo.authorAvatarUrl;
     var authorLetter = authorName.trim().charAt(0).toUpperCase() || "U";
-    var authorUserId = snippet.user_id || "";
+    var authorUserId = authorInfo.authorUserId;
     var dateStr = formatReadableDate(snippet.created_at);
     var escapedCode = escapeHtml(snippet.code_content || "");
 
@@ -778,22 +925,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     if (activeExpertiseFilter && activeExpertiseFilter !== "all") {
       list = list.filter(function (s) {
-        return s.expertise_area === activeExpertiseFilter;
+        return (s.expertise_area || "").toLowerCase() === activeExpertiseFilter.toLowerCase();
       });
     }
 
     if (list.length === 0) {
-      if (emptyEl) {
-        emptyEl.style.display = "block";
-        emptyEl.classList.add("visible");
-      }
+      if (emptyEl) emptyEl.style.display = "block";
       return;
     }
-
-    if (emptyEl) {
-      emptyEl.style.display = "none";
-      emptyEl.classList.remove("visible");
-    }
+    if (emptyEl) emptyEl.style.display = "none";
 
     list.forEach(function (snippet) {
       var card = createSnippetCardElement(snippet);
@@ -854,7 +994,7 @@ document.addEventListener("DOMContentLoaded", function () {
       try {
         var snipRes = await client
           .from("snippets")
-          .select("*, users:user_id(username, avatar_url, bio)")
+          .select("*, users:user_id(id, username, avatar_url, bio)")
           .eq("user_id", userId)
           .eq("is_public", true)
           .order("created_at", { ascending: false });
@@ -875,23 +1015,31 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     if (!userData) {
-      var foundCached = cachedUsers.find(function (u) { return u.id === userId; });
+      var foundCached = cachedUsers.find(function (u) { return String(u.id) === String(userId); });
       if (foundCached) {
         userData = foundCached;
       } else {
-        var snipWithUser = cachedSnippets.find(function (s) { return s.user_id === userId && s.users; });
-        if (snipWithUser && snipWithUser.users) {
-          userData = {
-            id: userId,
-            username: snipWithUser.users.username,
-            avatar_url: snipWithUser.users.avatar_url,
-            bio: snipWithUser.users.bio
-          };
+        var snipWithUser = cachedSnippets.find(function (s) { return String(s.user_id) === String(userId) && (s.users || s.profiles); });
+        if (snipWithUser) {
+          var joinedU = snipWithUser.users || snipWithUser.profiles;
+          if (Array.isArray(joinedU)) joinedU = joinedU[0];
+          if (joinedU) {
+            userData = {
+              id: userId,
+              username: joinedU.username || joinedU.full_name,
+              avatar_url: joinedU.avatar_url,
+              bio: joinedU.bio
+            };
+          }
         }
       }
     }
 
-    var uName = (userData && userData.username) || (userData && userData.email ? userData.email.split("@")[0] : "Anonim Kullanici");
+    if (!userData && currentUser && String(currentUser.id) === String(userId)) {
+      userData = currentUser;
+    }
+
+    var uName = (userData && userData.username) || (userData && userData.email ? userData.email.split("@")[0] : "Gelistirici");
     var uBio = (userData && userData.bio) ? userData.bio : "Bu kullanici henuz bir biyografi eklemedi.";
     var uAvatar = (userData && userData.avatar_url) ? userData.avatar_url.trim() : "";
     var uInitial = uName.trim().charAt(0).toUpperCase() || "U";
@@ -929,6 +1077,7 @@ document.addEventListener("DOMContentLoaded", function () {
         userSnippets.forEach(function (snip) {
           if (!snip.users && userData) {
             snip.users = {
+              id: userData.id,
               username: userData.username,
               avatar_url: userData.avatar_url,
               bio: userData.bio
@@ -951,6 +1100,8 @@ document.addEventListener("DOMContentLoaded", function () {
         profileView.style.display = "none";
       }
 
+      var sidebarItems = document.querySelectorAll(".sidebar-item[data-tab]");
+      var tabPanels = document.querySelectorAll(".tab-panel");
       tabPanels.forEach(function (p) { p.classList.remove("active"); });
       sidebarItems.forEach(function (si) { si.classList.remove("active"); });
 
@@ -1241,9 +1392,10 @@ document.addEventListener("DOMContentLoaded", function () {
           bio: metaBio
         };
 
-        var roleLabel = isAdmin(currentUser.email) ? "Yonetici (Admin)" : "Standart Kullanici";
-        addLog(currentUser.username + " bulut oturumu dogrulandi -- Yetki: " + roleLabel);
+        var roleLabel = isAdmin(currentUser.email) ? "Yonetici (Admin)" : "Gelistirici";
+        addLog(currentUser.username + " bulut oturumu dogrulandi -- Rol: " + roleLabel);
         loginForm.reset();
+        resetSnippetFormState();
         resetCaptcha();
         showView("dashboard");
       } catch (err) {
@@ -1261,41 +1413,96 @@ document.addEventListener("DOMContentLoaded", function () {
   async function renderRecentUsers(users) {
     var tbody = document.getElementById("recent-users");
     if (!tbody) return;
-    tbody.innerHTML = "";
 
     var list = [];
-    var client = getSupabaseClient();
-    if (client) {
-      try {
-        var res = await client.from("users").select("username, email, created_at").order("created_at", { ascending: false }).limit(5);
-        if (res.data && res.data.length > 0) {
-          list = res.data;
-        }
-      } catch (e) {}
-    }
-
-    if (list.length === 0) {
-      list = (users && users.length > 0) ? users.slice(0, 5) : [];
+    if (users && users.length > 0) {
+      list = users.slice();
+    } else {
+      var client = getSupabaseClient();
+      if (client) {
+        try {
+          var res = await client.from("users").select("id, username, email, avatar_url, created_at").order("created_at", { ascending: false }).limit(10);
+          if (res.data && res.data.length > 0) {
+            list = res.data;
+          }
+        } catch (e) {}
+      }
     }
 
     if (list.length === 0 && currentUser) {
-      list = [{
-        username: currentUser.username,
-        email: currentUser.email
-      }];
+      list = [currentUser];
     }
 
-    list.forEach(function (u) {
+    var seenIds = new Set();
+    var seenEmails = new Set();
+    var uniqueList = [];
+
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i];
+      var uId = u.id ? String(u.id) : null;
+      var uEmail = (u.email || "").toLowerCase().trim();
+
+      if (uId && seenIds.has(uId)) continue;
+      if (uEmail && seenEmails.has(uEmail)) continue;
+
+      if (uId) seenIds.add(uId);
+      if (uEmail) seenEmails.add(uEmail);
+      uniqueList.push(u);
+
+      if (uniqueList.length >= 5) break;
+    }
+
+    var signature = uniqueList.map(function (u) {
+      return (u.id || "") + ":" + (u.username || "") + ":" + (u.email || "") + ":" + (u.avatar_url || "");
+    }).join("|");
+
+    if (signature === lastRecentUsersSignature && tbody.children.length > 0) {
+      return;
+    }
+    lastRecentUsersSignature = signature;
+
+    tbody.innerHTML = "";
+
+    if (uniqueList.length === 0) {
+      var emptyTr = document.createElement("tr");
+      emptyTr.innerHTML = '<td colspan="2" style="text-align:center; color:#94a3b8; padding:16px;">Henuz kayitli kullanici bulunmuyor.</td>';
+      tbody.appendChild(emptyTr);
+      return;
+    }
+
+    uniqueList.forEach(function (u) {
       var tr = document.createElement("tr");
-      var displayName = u.username || (u.email ? u.email.split("@")[0] : "Kullanici");
-      var letter = displayName.trim().charAt(0).toUpperCase() || "K";
+      var displayName = u.username || (u.email ? u.email.split("@")[0] : "Gelistirici");
+      var letter = displayName.trim().charAt(0).toUpperCase() || "U";
+      var avatarUrl = (u.avatar_url || "").trim();
+
+      var avatarHtml = "";
+      if (avatarUrl) {
+        avatarHtml = '<img class="table-avatar-img" src="' + escapeHtml(avatarUrl) + '" alt="' + escapeHtml(displayName) + '">' +
+                     '<div class="table-avatar" style="display:none;">' + letter + '</div>';
+      } else {
+        avatarHtml = '<div class="table-avatar">' + letter + '</div>';
+      }
+
       var td1 = document.createElement("td");
-      td1.innerHTML = '<div class="table-user-cell"><div class="table-avatar">' + letter + '</div><span>' + escapeHtml(displayName) + '</span></div>';
+      td1.innerHTML = '<div class="table-user-cell">' + avatarHtml + '<span>' + escapeHtml(displayName) + '</span></div>';
+
       var td2 = document.createElement("td");
       td2.className = "table-email";
       td2.innerText = u.email || "";
+
       tr.appendChild(td1);
       tr.appendChild(td2);
+
+      var img = td1.querySelector(".table-avatar-img");
+      var fb = td1.querySelector(".table-avatar");
+      if (img && fb) {
+        img.onerror = function () {
+          img.style.display = "none";
+          fb.style.display = "flex";
+        };
+      }
+
       tbody.appendChild(tr);
     });
   }
@@ -1327,25 +1534,46 @@ document.addEventListener("DOMContentLoaded", function () {
       emptyEl.classList.remove("visible");
     }
 
+    var seenIds = new Set();
+    var seenEmails = new Set();
+
     users.forEach(function (user) {
+      var userEmail = (user.email || "").toLowerCase().trim();
+      var userId = user.id ? String(user.id) : null;
+
+      if (userId && seenIds.has(userId)) return;
+      if (userEmail && seenEmails.has(userEmail)) return;
+      if (userId) seenIds.add(userId);
+      if (userEmail) seenEmails.add(userEmail);
+
       var tr = document.createElement("tr");
-      var userEmail = user.email || "";
-      var displayName = user.username || (userEmail ? userEmail.split("@")[0] : "Kullanici");
-      var letter = displayName.trim().charAt(0).toUpperCase();
-      var isSelf = currentUser && (currentUser.email === userEmail || currentUser.id === user.id);
-      var isCurrentAdmin = isAdmin(userEmail) || user.role === "admin";
+      var displayName = user.username || (userEmail ? userEmail.split("@")[0] : "Gelistirici");
+      var letter = displayName.trim().charAt(0).toUpperCase() || "U";
+      var avatarUrl = (user.avatar_url || "").trim();
+      var isSelf = currentUser && (currentUser.email === user.email || currentUser.id === user.id);
+      var isCurrentAdmin = isAdmin(user.email) || user.role === "admin";
+
+      var avatarHtml = "";
+      if (avatarUrl) {
+        avatarHtml = '<img class="table-avatar-img" src="' + escapeHtml(avatarUrl) + '" alt="' + escapeHtml(displayName) + '">' +
+                     '<div class="table-avatar" style="display:none;">' + letter + '</div>';
+      } else {
+        avatarHtml = '<div class="table-avatar">' + letter + '</div>';
+      }
 
       var td1 = document.createElement("td");
-      td1.innerHTML = '<div class="table-user-cell"><div class="table-avatar">' + letter + '</div><span>' + escapeHtml(displayName) + '</span></div>';
+      td1.innerHTML = '<div class="table-user-cell">' + avatarHtml + '<span>' + escapeHtml(displayName) + '</span></div>';
 
       var td2 = document.createElement("td");
       td2.className = "table-email";
-      td2.innerText = userEmail;
+      td2.innerText = user.email || "";
 
       var td3 = document.createElement("td");
-      var roleText = isCurrentAdmin ? "Yonetici" : "Kullanici";
-      var roleClass = isCurrentAdmin ? "role-admin" : "role-user";
-      td3.innerHTML = '<span class="role-badge ' + roleClass + '">' + roleText + '</span>';
+      if (isCurrentAdmin) {
+        td3.innerHTML = '<span class="role-badge role-admin">Yonetici</span>';
+      } else {
+        td3.innerHTML = '<span style="color:#64748b; font-size:12px;">Uye</span>';
+      }
 
       var td4 = document.createElement("td");
       var btn = document.createElement("button");
@@ -1380,6 +1608,16 @@ document.addEventListener("DOMContentLoaded", function () {
       tr.appendChild(td2);
       tr.appendChild(td3);
       tr.appendChild(td4);
+
+      var img = td1.querySelector(".table-avatar-img");
+      var fb = td1.querySelector(".table-avatar");
+      if (img && fb) {
+        img.onerror = function () {
+          img.style.display = "none";
+          fb.style.display = "flex";
+        };
+      }
+
       tbody.appendChild(tr);
     });
   }
@@ -1473,17 +1711,74 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  var editAvatarFileInput = document.getElementById("edit-avatar-file");
+  var editAvatarPreviewImg = document.getElementById("edit-avatar-preview-img");
+  var editAvatarPreviewFallback = document.getElementById("edit-avatar-preview-fallback");
+  var avatarFileName = document.getElementById("avatar-file-name");
+
+  if (editAvatarFileInput) {
+    editAvatarFileInput.addEventListener("change", function (e) {
+      var file = e.target.files[0];
+      if (!file) {
+        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        showAlert("edit-profile-alert", "Gorsel boyutu en fazla 5MB olabilir.", "error");
+        editAvatarFileInput.value = "";
+        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
+        return;
+      }
+      if (avatarFileName) avatarFileName.innerText = file.name;
+
+      var reader = new FileReader();
+      reader.onload = function (evt) {
+        if (editAvatarPreviewImg && editAvatarPreviewFallback) {
+          editAvatarPreviewImg.src = evt.target.result;
+          editAvatarPreviewImg.style.display = "block";
+          editAvatarPreviewFallback.style.display = "none";
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   function populateEditProfile() {
     if (!currentUser) return;
     var un = document.getElementById("edit-username");
-    var av = document.getElementById("edit-avatar-url");
     var bio = document.getElementById("edit-bio");
     var charNum = document.getElementById("bio-char-num");
+    var fileInput = document.getElementById("edit-avatar-file");
+    var fileName = document.getElementById("avatar-file-name");
+    var prevImg = document.getElementById("edit-avatar-preview-img");
+    var prevFallback = document.getElementById("edit-avatar-preview-fallback");
 
     if (un) un.value = currentUser.username || "";
-    if (av) av.value = currentUser.avatar_url || "";
     if (bio) bio.value = currentUser.bio || "";
     if (charNum) charNum.innerText = (currentUser.bio || "").length;
+    if (fileInput) fileInput.value = "";
+    if (fileName) fileName.innerText = "Dosya secilmedi";
+
+    var avatarUrl = (currentUser.avatar_url || "").trim();
+    var letter = (currentUser.username || currentUser.email || "U").trim().charAt(0).toUpperCase();
+
+    if (prevImg && prevFallback) {
+      if (avatarUrl) {
+        prevImg.src = avatarUrl;
+        prevImg.style.display = "block";
+        prevFallback.style.display = "none";
+        prevImg.onerror = function () {
+          prevImg.style.display = "none";
+          prevFallback.style.display = "flex";
+          prevFallback.innerText = letter;
+        };
+      } else {
+        prevImg.style.display = "none";
+        prevFallback.style.display = "flex";
+        prevFallback.innerText = letter;
+      }
+    }
+
     hideAlert("edit-profile-alert");
   }
 
@@ -1504,8 +1799,8 @@ document.addEventListener("DOMContentLoaded", function () {
       hideAlert("edit-profile-alert");
       var btn = document.getElementById("edit-profile-submit-btn");
       var newUsername = document.getElementById("edit-username").value.trim();
-      var newAvatarUrl = document.getElementById("edit-avatar-url").value.trim();
       var newBio = document.getElementById("edit-bio").value.trim();
+      var avatarFile = editAvatarFileInput && editAvatarFileInput.files ? editAvatarFileInput.files[0] : null;
 
       if (!newUsername) {
         showAlert("edit-profile-alert", "Kullanici adi bos birakilamaz.", "error");
@@ -1522,6 +1817,28 @@ document.addEventListener("DOMContentLoaded", function () {
       }
 
       try {
+        var newAvatarUrl = currentUser.avatar_url || "";
+        if (avatarFile) {
+          var client = getSupabaseClient();
+          if (client) {
+            var ext = avatarFile.name.split(".").pop().toLowerCase() || "png";
+            var fileName = (currentUser.id || "user") + "-" + Date.now() + "." + ext;
+            var uploadRes = await client.storage.from("avatars").upload(fileName, avatarFile, {
+              upsert: true,
+              cacheControl: "3600"
+            });
+
+            if (uploadRes.error) {
+              addLog("Storage uyarisi: " + uploadRes.error.message);
+            } else {
+              var publicData = client.storage.from("avatars").getPublicUrl(fileName);
+              if (publicData && publicData.data && publicData.data.publicUrl) {
+                newAvatarUrl = publicData.data.publicUrl;
+              }
+            }
+          }
+        }
+
         await updateUserProfile(newUsername, newAvatarUrl, newBio);
         showAlert("edit-profile-alert", "Profil basariyla guncellendi.", "success");
         addLog("Kullanici profili guncellendi (" + newUsername + ")");
@@ -1674,15 +1991,15 @@ document.addEventListener("DOMContentLoaded", function () {
         await fetchPublicSnippets();
         renderSnippetsFeed(cachedSnippets);
       } else if (tabId === "tab-add-snippet") {
-        if (!editingSnippetId) {
-          resetSnippetFormState();
-        }
+        resetSnippetFormState();
         hideAlert("snippet-alert");
       }
     });
   });
 
   async function refreshDashboardData() {
+    if (isRefreshingData) return;
+    isRefreshingData = true;
     try {
       var client = getSupabaseClient();
       if (client && currentUser && currentUser.id) {
@@ -1707,10 +2024,10 @@ document.addEventListener("DOMContentLoaded", function () {
       await fetchPublicSnippets();
       await updateSnippetCount();
       renderSnippetsFeed(cachedSnippets);
-
-      addLog("Bulut sunucusundan veriler basariyla cekildi (" + users.length + " kullanici, " + cachedSnippets.length + " snippet)");
     } catch (err) {
       addLog("Bulut veri senkronizasyon uyarisi: " + (err.message || err));
+    } finally {
+      isRefreshingData = false;
     }
   }
 
@@ -1755,6 +2072,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     applyRolePermissions();
     updateDashHeader();
+    resetSnippetFormState();
 
     if (systemLogs.length === 0) {
       addLog("Sistem cekirdegi ve UI bilesenleri yuklendi");
@@ -1765,11 +2083,11 @@ document.addEventListener("DOMContentLoaded", function () {
     await refreshDashboardData();
     setupRealtimeListener();
 
-    addLog(currentUser.username + " yonetim konsoluna baglandi (" + (isAdmin(currentUser.email) ? "Yonetici" : "Standart Kullanici") + ")");
+    addLog(currentUser.username + " yonetim konsoluna baglandi");
     updateFluctuatingMetrics();
 
     if (autoSyncInterval) clearInterval(autoSyncInterval);
-    autoSyncInterval = setInterval(refreshDashboardData, 4000);
+    autoSyncInterval = setInterval(refreshDashboardData, 12000);
 
     sidebarItems.forEach(function (si) { si.classList.remove("active"); });
     var firstTab = document.querySelector('.sidebar-item[data-tab="tab-overview"]');
@@ -1790,7 +2108,7 @@ document.addEventListener("DOMContentLoaded", function () {
         var res = await client.auth.getSession();
         if (res.data && res.data.session) {
           var u = res.data.session.user;
-          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.email ? u.email.split("@")[0] : "Kullanici");
+          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.user_metadata && u.user_metadata.full_name) || (u && u.email ? u.email.split("@")[0] : "Gelistirici");
           var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || "";
           var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
 
@@ -1845,6 +2163,7 @@ document.addEventListener("DOMContentLoaded", function () {
               }
             }
           }
+          resetSnippetFormState();
           updateNavState();
           showView("dashboard");
         } else if (session && session.user) {
@@ -1863,6 +2182,7 @@ document.addEventListener("DOMContentLoaded", function () {
           updateNavState();
         } else {
           currentUser = null;
+          resetSnippetFormState();
           updateNavState();
         }
       });
