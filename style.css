@@ -864,6 +864,43 @@ svg {
   display: inline-block;
 }
 
+.google-oauth-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 16px;
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  color: #ffffff;
+  background: #1f2328;
+  border: 1px solid #323842;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.google-oauth-btn:hover {
+  background: #2b313a;
+  border-color: #4b5563;
+}
+
+.google-oauth-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.google-oauth-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+
 .dash-navbar {
   position: fixed;
   top: 0;

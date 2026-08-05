@@ -482,7 +482,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!client) return;
     var t0 = performance.now();
     await client.from("snippets").delete().neq("title", "non_existing_system_null_placeholder");
-    await client.from("users").delete().neq("email", "non_existing_system_null_placeholder@nexus.cloud");
+    await client.from("users").delete().neq("email", "non_existing_system_null_placeholder@sniphub.cloud");
     await cloudSignOut();
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
@@ -1554,7 +1554,7 @@ document.addEventListener("DOMContentLoaded", function () {
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "nexus_cloud_backup_" + Date.now() + ".json";
+      a.download = "sniphub_cloud_backup_" + Date.now() + ".json";
       a.click();
       URL.revokeObjectURL(url);
       addLog("Bulut veritabani disa aktarildi (" + exportData.length + " kayit)");
@@ -1585,7 +1585,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 var rowObj = {
                   id: row.id || undefined,
                   username: row.username || "Kullanici",
-                  email: row.email || ("user" + i + "@nexus.cloud"),
+                  email: row.email || ("user" + i + "@sniphub.cloud"),
                   role: row.role || (isAdmin(row.email) ? "admin" : "user"),
                   bio: row.bio || "",
                   avatar_url: row.avatar_url || "",
@@ -1822,7 +1822,7 @@ document.addEventListener("DOMContentLoaded", function () {
           };
 
           var provider = (u.app_metadata && u.app_metadata.provider) || "email";
-          if (provider === "github") {
+          if (provider === "github" || provider === "google") {
             var cl = getSupabaseClient();
             if (cl) {
               var checkRes = await cl.from("users").select("id, username, bio, avatar_url").eq("id", u.id).maybeSingle();
@@ -1837,7 +1837,7 @@ document.addEventListener("DOMContentLoaded", function () {
                   avatar_url: metaAvatar,
                   created_at: new Date().toISOString()
                 }]);
-                addLog("GitHub OAuth ile yeni kullanici kaydedildi: " + metaName);
+                addLog((provider === "google" ? "Google" : "GitHub") + " OAuth ile yeni kullanici kaydedildi: " + metaName);
               } else {
                 currentUser.username = checkRes.data.username || currentUser.username;
                 currentUser.bio = checkRes.data.bio || currentUser.bio;
@@ -1888,6 +1888,30 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
+  async function signInWithGoogle() {
+    var client = getSupabaseClient();
+    if (!client) {
+      alert("Supabase baglantisi kurulamadi.");
+      return;
+    }
+    try {
+      var res = await client.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (res.error) {
+        throw res.error;
+      }
+    } catch (err) {
+      var errMsg = err.message || JSON.stringify(err);
+      console.error("Google Auth Hatasi:", err);
+      showAlert("login-alert", "Google ile giris basarisiz oldu: " + errMsg, "error");
+      showAlert("register-alert", "Google ile kayit basarisiz oldu: " + errMsg, "error");
+    }
+  }
+
   var githubLoginBtn = document.getElementById("github-login-btn");
   if (githubLoginBtn) {
     githubLoginBtn.addEventListener("click", function (e) {
@@ -1905,6 +1929,38 @@ document.addEventListener("DOMContentLoaded", function () {
       githubRegisterBtn.disabled = true;
       githubRegisterBtn.innerText = "Yonlendiriliyor...";
       signInWithGitHub();
+    });
+  }
+
+  var googleLoginBtn = document.getElementById("btn-auth-google");
+  if (googleLoginBtn) {
+    googleLoginBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      googleLoginBtn.disabled = true;
+      var origText = googleLoginBtn.innerText;
+      googleLoginBtn.innerText = "Yonlendiriliyor...";
+      try {
+        await signInWithGoogle();
+      } catch (err) {
+        googleLoginBtn.disabled = false;
+        googleLoginBtn.innerText = origText;
+      }
+    });
+  }
+
+  var googleRegisterBtn = document.getElementById("btn-auth-google-register");
+  if (googleRegisterBtn) {
+    googleRegisterBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      googleRegisterBtn.disabled = true;
+      var origText = googleRegisterBtn.innerText;
+      googleRegisterBtn.innerText = "Yonlendiriliyor...";
+      try {
+        await signInWithGoogle();
+      } catch (err) {
+        googleRegisterBtn.disabled = false;
+        googleRegisterBtn.innerText = origText;
+      }
     });
   }
 
