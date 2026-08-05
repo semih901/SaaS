@@ -26,7 +26,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var cachedUsers = [];
   var cachedSnippets = [];
   var systemLogs = [];
-  var chartRendered = false;
+  var editingSnippetId = null;
   var metricsInterval = null;
   var autoSyncInterval = null;
   var realtimeChannel = null;
@@ -348,11 +348,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     var insertRes = await client.from("users").insert([userRecord]);
     if (insertRes.error) {
-      var fallbackRecord = {
-        username: username,
-        email: email
-      };
-      await client.from("users").insert([fallbackRecord]);
+      await client.from("users").upsert(userRecord);
     }
 
     var t1 = performance.now();
@@ -389,12 +385,7 @@ document.addEventListener("DOMContentLoaded", function () {
       } catch (e) {}
     }
     currentUser = null;
-    cachedUsers = [];
-    cachedSnippets = [];
-    if (autoSyncInterval) {
-      clearInterval(autoSyncInterval);
-      autoSyncInterval = null;
-    }
+    updateNavState();
   }
 
   async function cloudFetchUsers() {
@@ -523,6 +514,30 @@ document.addEventListener("DOMContentLoaded", function () {
     return res.data;
   }
 
+  async function updateSnippet(snippetId, title, language, expertiseArea, isPublic, codeContent) {
+    var client = getSupabaseClient();
+    if (!client) {
+      throw new Error("Supabase baglantisi kurulamadi.");
+    }
+    if (!currentUser) {
+      throw new Error("Oturum acik degil.");
+    }
+    var t0 = performance.now();
+    var updateRecord = {
+      title: title,
+      language: language,
+      code_content: codeContent,
+      is_public: isPublic,
+      expertise_area: expertiseArea
+    };
+    var res = await client.from("snippets").update(updateRecord).eq("id", snippetId).eq("user_id", currentUser.id);
+    var t1 = performance.now();
+    setMetricApi(Math.max(12, Math.round(t1 - t0)));
+    if (res.error) throw res.error;
+    addLog("Kod parcacigi guncellendi: " + title + " [" + language + " / " + expertiseArea + "]");
+    return res.data;
+  }
+
   async function fetchPublicSnippets() {
     var client = getSupabaseClient();
     if (!client) {
@@ -596,6 +611,68 @@ document.addEventListener("DOMContentLoaded", function () {
     document.body.removeChild(ta);
   }
 
+  function openEditSnippetForm(snippet) {
+    if (!snippet) return;
+    editingSnippetId = snippet.id;
+
+    var profileView = document.getElementById("public-profile-view");
+    if (profileView) {
+      profileView.style.display = "none";
+    }
+
+    tabPanels.forEach(function (p) { p.classList.remove("active"); });
+    sidebarItems.forEach(function (si) { si.classList.remove("active"); });
+
+    var addSnippetPanel = document.getElementById("tab-add-snippet");
+    if (addSnippetPanel) {
+      addSnippetPanel.classList.add("active");
+    }
+    var addSidebarBtn = document.querySelector('.sidebar-item[data-tab="tab-add-snippet"]');
+    if (addSidebarBtn) {
+      addSidebarBtn.classList.add("active");
+    }
+
+    var formTitle = document.getElementById("snippet-form-title");
+    if (formTitle) formTitle.innerText = "Kod Parcacigini Duzenle";
+
+    var formDesc = document.getElementById("snippet-form-desc");
+    if (formDesc) formDesc.innerText = "Kod parcaciginizin basligini, dilini, uzmanlik alanini ve icerigini guncelleyin.";
+
+    var submitBtn = document.getElementById("snippet-submit-btn");
+    if (submitBtn) submitBtn.innerText = "Degisiklikleri Guncelle";
+
+    var titleInput = document.getElementById("snippet-title");
+    var langInput = document.getElementById("snippet-language");
+    var expertiseSelect = document.getElementById("expertise-select");
+    var publicCheckbox = document.getElementById("snippet-public");
+    var codeTextarea = document.getElementById("snippet-code");
+
+    if (titleInput) titleInput.value = snippet.title || "";
+    if (langInput) langInput.value = snippet.language || "";
+    if (expertiseSelect) expertiseSelect.value = snippet.expertise_area || "";
+    if (publicCheckbox) publicCheckbox.checked = (snippet.is_public !== false);
+    if (codeTextarea) codeTextarea.value = snippet.code_content || "";
+
+    hideAlert("snippet-alert");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    addLog("Kod parcacigi duzenleme moduna gecildi (" + (snippet.title || snippet.id) + ")");
+  }
+
+  function resetSnippetFormState() {
+    editingSnippetId = null;
+    var formTitle = document.getElementById("snippet-form-title");
+    if (formTitle) formTitle.innerText = "Yeni Kod Parcacigi Ekle";
+    var formDesc = document.getElementById("snippet-form-desc");
+    if (formDesc) formDesc.innerText = "Kodunuzu toplulukla paylasin veya Claude AI ile optimize edin.";
+    var submitBtn = document.getElementById("snippet-submit-btn");
+    if (submitBtn) submitBtn.innerText = "Kod Parcacigini Kaydet";
+    var sForm = document.getElementById("snippet-form");
+    if (sForm) sForm.reset();
+    var publicCheckbox = document.getElementById("snippet-public");
+    if (publicCheckbox) publicCheckbox.checked = true;
+    hideAlert("snippet-alert");
+  }
+
   function createSnippetCardElement(snippet) {
     var card = document.createElement("div");
     card.className = "snippet-card";
@@ -608,6 +685,9 @@ document.addEventListener("DOMContentLoaded", function () {
     var authorUserId = snippet.user_id || "";
     var dateStr = formatReadableDate(snippet.created_at);
     var escapedCode = escapeHtml(snippet.code_content || "");
+
+    var isOwner = currentUser && authorUserId && (String(currentUser.id) === String(authorUserId));
+    var editBtnHtml = isOwner ? '<button class="snippet-edit-btn" id="btn-edit-snippet" data-snippet-id="' + escapeHtml(snippet.id || "") + '">Duzenle</button>' : "";
 
     var avatarHtml = "";
     if (authorAvatarUrl) {
@@ -628,7 +708,10 @@ document.addEventListener("DOMContentLoaded", function () {
         '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
       '</div>' +
       '<div class="snippet-code-block">' +
-        '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
+        '<div class="snippet-code-actions">' +
+          editBtnHtml +
+          '<button class="snippet-copy-btn" data-code-id="' + (snippet.id || "") + '">Kopyala</button>' +
+        '</div>' +
         '<pre><code>' + escapedCode + '</code></pre>' +
       '</div>' +
       '<div class="snippet-card-footer">' +
@@ -646,6 +729,14 @@ document.addEventListener("DOMContentLoaded", function () {
         img.style.display = "none";
         fallback.style.display = "flex";
       };
+    }
+
+    var editBtn = card.querySelector(".snippet-edit-btn");
+    if (editBtn) {
+      editBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        openEditSnippetForm(snippet);
+      });
     }
 
     var copyBtn = card.querySelector(".snippet-copy-btn");
@@ -980,33 +1071,80 @@ document.addEventListener("DOMContentLoaded", function () {
         return;
       }
 
-      if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.innerText = "Buluta Kaydediliyor...";
-      }
-
-      try {
-        await insertSnippet(title, language, expertiseArea, isPublic, codeContent);
-        showAlert("snippet-alert", "Kod parcacigi basariyla bulut sunucusuna kaydedildi.", "success");
-        snippetForm.reset();
-        if (publicCheckbox) publicCheckbox.checked = true;
-        await fetchPublicSnippets();
-        renderSnippetsFeed(cachedSnippets);
-        updateSnippetCount();
-      } catch (err) {
-        showAlert("snippet-alert", err.message || "Kayit sirasinda hata olustu.", "error");
-      } finally {
+      if (editingSnippetId) {
         if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.innerText = "Kod Parcacigini Kaydet";
+          submitBtn.disabled = true;
+          submitBtn.innerText = "Guncelleniyor...";
+        }
+
+        try {
+          await updateSnippet(editingSnippetId, title, language, expertiseArea, isPublic, codeContent);
+          showAlert("snippet-alert", "Kod parcacigi basariyla guncellendi.", "success");
+          resetSnippetFormState();
+          await fetchPublicSnippets();
+          renderSnippetsFeed(cachedSnippets);
+          await updateSnippetCount();
+        } catch (err) {
+          showAlert("snippet-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+          }
+        }
+      } else {
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.innerText = "Buluta Kaydediliyor...";
+        }
+
+        try {
+          await insertSnippet(title, language, expertiseArea, isPublic, codeContent);
+          showAlert("snippet-alert", "Kod parcacigi basariyla bulut sunucusuna kaydedildi.", "success");
+          resetSnippetFormState();
+          await fetchPublicSnippets();
+          renderSnippetsFeed(cachedSnippets);
+          await updateSnippetCount();
+        } catch (err) {
+          showAlert("snippet-alert", err.message || "Kayit sirasinda hata olustu.", "error");
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+          }
         }
       }
     });
   }
 
-  function updateSnippetCount() {
+  async function updateSnippetCount() {
     var statViews = document.getElementById("stat-views");
-    if (statViews) statViews.innerText = cachedSnippets.length;
+    if (!statViews) return;
+    var client = getSupabaseClient();
+    if (client) {
+      try {
+        var res = await client.from("snippets").select("*", { count: "exact", head: true });
+        if (res && res.count !== null && res.count !== undefined) {
+          statViews.innerText = res.count;
+          return;
+        }
+      } catch (e) {}
+    }
+    statViews.innerText = cachedSnippets.length;
+  }
+
+  async function updateOverviewUserCount() {
+    var statUsers = document.getElementById("stat-users");
+    if (!statUsers) return;
+    var client = getSupabaseClient();
+    if (client) {
+      try {
+        var res = await client.from("users").select("*", { count: "exact", head: true });
+        if (res && res.count !== null && res.count !== undefined) {
+          statUsers.innerText = res.count;
+          return;
+        }
+      } catch (e) {}
+    }
+    statUsers.innerText = cachedUsers.length || 1;
   }
 
   var registerForm = document.getElementById("register-form");
@@ -1120,33 +1258,37 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  function renderRecentUsers(users) {
+  async function renderRecentUsers(users) {
     var tbody = document.getElementById("recent-users");
     if (!tbody) return;
     tbody.innerHTML = "";
 
-    var isUserAdmin = currentUser && isAdmin(currentUser.email);
     var list = [];
+    var client = getSupabaseClient();
+    if (client) {
+      try {
+        var res = await client.from("users").select("username, email, created_at").order("created_at", { ascending: false }).limit(5);
+        if (res.data && res.data.length > 0) {
+          list = res.data;
+        }
+      } catch (e) {}
+    }
 
-    if (isUserAdmin) {
+    if (list.length === 0) {
       list = (users && users.length > 0) ? users.slice(0, 5) : [];
-    } else {
-      var filtered = (users || []).filter(function (u) {
-        return currentUser && (u.email === currentUser.email || (currentUser.id && u.id === currentUser.id));
-      });
-      if (filtered.length === 0 && currentUser) {
-        filtered = [{
-          username: currentUser.username,
-          email: currentUser.email
-        }];
-      }
-      list = filtered;
+    }
+
+    if (list.length === 0 && currentUser) {
+      list = [{
+        username: currentUser.username,
+        email: currentUser.email
+      }];
     }
 
     list.forEach(function (u) {
       var tr = document.createElement("tr");
       var displayName = u.username || (u.email ? u.email.split("@")[0] : "Kullanici");
-      var letter = displayName.trim().charAt(0).toUpperCase();
+      var letter = displayName.trim().charAt(0).toUpperCase() || "K";
       var td1 = document.createElement("td");
       td1.innerHTML = '<div class="table-user-cell"><div class="table-avatar">' + letter + '</div><span>' + escapeHtml(displayName) + '</span></div>';
       var td2 = document.createElement("td");
@@ -1328,39 +1470,6 @@ document.addEventListener("DOMContentLoaded", function () {
           dbCopyBtn.innerHTML = originalHtml;
         }, 2000);
       });
-    });
-  }
-
-  function renderChart() {
-    if (chartRendered) return;
-    chartRendered = true;
-    var container = document.getElementById("visitor-chart");
-    if (!container) return;
-    container.innerHTML = "";
-
-    var days = ["Pzt", "Sal", "Car", "Per", "Cum", "Cmt", "Paz"];
-    var vals = [32, 64, 45, 82, 54, 76, 94];
-
-    days.forEach(function (day, i) {
-      var col = document.createElement("div");
-      col.className = "chart-col";
-      var v = document.createElement("span");
-      v.className = "chart-val";
-      v.innerText = vals[i];
-      var bar = document.createElement("div");
-      bar.className = "chart-bar";
-      var lbl = document.createElement("span");
-      lbl.className = "chart-day";
-      lbl.innerText = day;
-
-      col.appendChild(v);
-      col.appendChild(bar);
-      col.appendChild(lbl);
-      container.appendChild(col);
-
-      setTimeout(function () {
-        bar.style.height = vals[i] + "%";
-      }, 100 * i);
     });
   }
 
@@ -1557,16 +1666,17 @@ document.addEventListener("DOMContentLoaded", function () {
       } else if (tabId === "tab-edit-profile") {
         populateEditProfile();
       } else if (tabId === "tab-overview") {
-        renderRecentUsers(cachedUsers);
-        var isUserAdmin = currentUser && isAdmin(currentUser.email);
-        var statUsers = document.getElementById("stat-users");
-        if (statUsers) statUsers.innerText = isUserAdmin ? cachedUsers.length : 1;
-        updateSnippetCount();
+        await updateOverviewUserCount();
+        await updateSnippetCount();
+        await renderRecentUsers(cachedUsers);
         await refreshDashboardData();
       } else if (tabId === "tab-snippets") {
         await fetchPublicSnippets();
         renderSnippetsFeed(cachedSnippets);
       } else if (tabId === "tab-add-snippet") {
+        if (!editingSnippetId) {
+          resetSnippetFormState();
+        }
         hideAlert("snippet-alert");
       }
     });
@@ -1588,19 +1698,17 @@ document.addEventListener("DOMContentLoaded", function () {
       }
 
       var users = await cloudFetchUsers();
-      var isUserAdmin = currentUser && isAdmin(currentUser.email);
-      var statUsers = document.getElementById("stat-users");
-      if (statUsers) statUsers.innerText = isUserAdmin ? users.length : 1;
-      renderRecentUsers(users);
+      await updateOverviewUserCount();
+      await renderRecentUsers(users);
       renderUsersTable(users);
       renderDatabaseView(users);
       renderLogs();
 
       await fetchPublicSnippets();
-      updateSnippetCount();
+      await updateSnippetCount();
       renderSnippetsFeed(cachedSnippets);
 
-      addLog("Bulut sunucusundan veriler basariyla cekildi (" + (isUserAdmin ? users.length : 1) + " kullanici, " + cachedSnippets.length + " snippet)");
+      addLog("Bulut sunucusundan veriler basariyla cekildi (" + users.length + " kullanici, " + cachedSnippets.length + " snippet)");
     } catch (err) {
       addLog("Bulut veri senkronizasyon uyarisi: " + (err.message || err));
     }
@@ -1647,7 +1755,6 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     applyRolePermissions();
     updateDashHeader();
-    renderChart();
 
     if (systemLogs.length === 0) {
       addLog("Sistem cekirdegi ve UI bilesenleri yuklendi");
