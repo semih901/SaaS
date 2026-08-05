@@ -628,6 +628,8 @@ document.addEventListener("DOMContentLoaded", function () {
       code_content: codeContent,
       is_public: isPublic,
       expertise_area: expertiseArea,
+      copy_count: 0,
+      upvotes: 0,
       created_at: new Date().toISOString()
     };
     var res = await client.from("snippets").insert([record]);
@@ -852,6 +854,51 @@ document.addEventListener("DOMContentLoaded", function () {
     hideAlert("snippet-alert");
   }
 
+  function getVotedSnippets() {
+    try {
+      var raw = localStorage.getItem("sniphub_voted_snippets");
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  function addVotedSnippet(snippetId) {
+    var voted = getVotedSnippets();
+    if (voted.indexOf(snippetId) === -1) {
+      voted.push(snippetId);
+      try { localStorage.setItem("sniphub_voted_snippets", JSON.stringify(voted)); } catch (e) {}
+    }
+  }
+
+  function hasVotedSnippet(snippetId) {
+    return getVotedSnippets().indexOf(snippetId) !== -1;
+  }
+
+  async function incrementCopyCount(snippetId) {
+    var client = getSupabaseClient();
+    if (!client || !snippetId) return;
+    try {
+      var res = await client.from("snippets").select("copy_count").eq("id", snippetId).maybeSingle();
+      var current = (res && res.data && typeof res.data.copy_count === "number") ? res.data.copy_count : 0;
+      await client.from("snippets").update({ copy_count: current + 1 }).eq("id", snippetId);
+    } catch (e) {}
+  }
+
+  async function incrementUpvote(snippetId) {
+    var client = getSupabaseClient();
+    if (!client || !snippetId) return;
+    try {
+      var res = await client.from("snippets").select("upvotes").eq("id", snippetId).maybeSingle();
+      var current = (res && res.data && typeof res.data.upvotes === "number") ? res.data.upvotes : 0;
+      await client.from("snippets").update({ upvotes: current + 1 }).eq("id", snippetId);
+    } catch (e) {}
+  }
+
+  function isTrending(snippet) {
+    var copies = (typeof snippet.copy_count === "number") ? snippet.copy_count : 0;
+    var votes = (typeof snippet.upvotes === "number") ? snippet.upvotes : 0;
+    return (copies + votes) >= 5;
+  }
+
   function createSnippetCardElement(snippet) {
     var card = document.createElement("div");
     card.className = "snippet-card";
@@ -876,12 +923,30 @@ document.addEventListener("DOMContentLoaded", function () {
       avatarHtml = '<div class="snippet-author-avatar">' + authorLetter + '</div>';
     }
 
+    var copyCount = (typeof snippet.copy_count === "number") ? snippet.copy_count : 0;
+    var upvoteCount = (typeof snippet.upvotes === "number") ? snippet.upvotes : 0;
+    var voted = hasVotedSnippet(snippet.id);
+    var votedClass = voted ? " voted" : "";
+
+    var trendingHtml = "";
+    if (isTrending(snippet)) {
+      trendingHtml = '<span class="badge-trending"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend</span>';
+    }
+
+    var copyCountHtml = "";
+    if (copyCount > 0) {
+      copyCountHtml = '<span class="snippet-copy-count" data-copy-count-id="' + (snippet.id || "") + '">' + copyCount + ' kez kopyalandi</span>';
+    } else {
+      copyCountHtml = '<span class="snippet-copy-count" data-copy-count-id="' + (snippet.id || "") + '" style="display:none"></span>';
+    }
+
     card.innerHTML =
       '<div class="snippet-card-header">' +
         '<div class="snippet-card-meta">' +
           '<div class="snippet-card-title">' + escapeHtml(snippet.title || "Basliksiz") + '</div>' +
           '<div class="snippet-card-info">' +
             '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
+            trendingHtml +
           '</div>' +
         '</div>' +
         '<span class="badge-expertise">' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
@@ -898,7 +963,14 @@ document.addEventListener("DOMContentLoaded", function () {
           avatarHtml +
           '<span class="snippet-author-name">' + escapeHtml(authorName) + '</span>' +
         '</button>' +
-        '<span class="snippet-date">' + dateStr + '</span>' +
+        '<div class="snippet-card-actions">' +
+          copyCountHtml +
+          '<button type="button" class="snippet-upvote-btn' + votedClass + '" data-snippet-id="' + (snippet.id || "") + '">' +
+            '<svg viewBox="0 0 24 24" width="13" height="13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>' +
+            '<span class="upvote-num">' + upvoteCount + '</span>' +
+          '</button>' +
+          '<span class="snippet-date">' + dateStr + '</span>' +
+        '</div>' +
       '</div>';
 
     var img = card.querySelector(".snippet-author-avatar-img");
@@ -920,16 +992,53 @@ document.addEventListener("DOMContentLoaded", function () {
 
     var copyBtn = card.querySelector(".snippet-copy-btn");
     if (copyBtn) {
-      (function (btn, rawCode) {
+      (function (btn, rawCode, snipId, snipObj) {
         btn.addEventListener("click", function () {
           copyTextToClipboard(rawCode, function () {
             btn.innerText = "Kopyalandi";
-            setTimeout(function () {
-              btn.innerText = "Kopyala";
-            }, 2000);
+            setTimeout(function () { btn.innerText = "Kopyala"; }, 2000);
+
+            if (snipId) {
+              incrementCopyCount(snipId);
+              if (typeof snipObj.copy_count === "number") {
+                snipObj.copy_count = snipObj.copy_count + 1;
+              } else {
+                snipObj.copy_count = 1;
+              }
+              var countEl = card.querySelector('[data-copy-count-id="' + snipId + '"]');
+              if (countEl) {
+                countEl.innerText = snipObj.copy_count + " kez kopyalandi";
+                countEl.style.display = "";
+              }
+            }
           });
         });
-      })(copyBtn, snippet.code_content || "");
+      })(copyBtn, snippet.code_content || "", snippet.id, snippet);
+    }
+
+    var upvoteBtn = card.querySelector(".snippet-upvote-btn");
+    if (upvoteBtn) {
+      (function (btn, snipId, snipObj) {
+        btn.addEventListener("click", function () {
+          if (!currentUser) {
+            alert("Oy vermek icin giris yapmaniz gerekiyor.");
+            return;
+          }
+          if (hasVotedSnippet(snipId)) {
+            return;
+          }
+          addVotedSnippet(snipId);
+          btn.classList.add("voted");
+          if (typeof snipObj.upvotes === "number") {
+            snipObj.upvotes = snipObj.upvotes + 1;
+          } else {
+            snipObj.upvotes = 1;
+          }
+          var numEl = btn.querySelector(".upvote-num");
+          if (numEl) numEl.innerText = snipObj.upvotes;
+          incrementUpvote(snipId);
+        });
+      })(upvoteBtn, snippet.id, snippet);
     }
 
     var authorBtn = card.querySelector(".snippet-author-btn");
@@ -1120,6 +1229,66 @@ document.addEventListener("DOMContentLoaded", function () {
         });
       }
     }
+
+    var totalCopies = 0;
+    var totalUpvotes = 0;
+    var snippetCount = userSnippets.length;
+    for (var si = 0; si < userSnippets.length; si++) {
+      totalCopies += (typeof userSnippets[si].copy_count === "number") ? userSnippets[si].copy_count : 0;
+      totalUpvotes += (typeof userSnippets[si].upvotes === "number") ? userSnippets[si].upvotes : 0;
+    }
+
+    var statSnippetsEl = document.getElementById("profile-stat-snippets");
+    var statCopiesEl = document.getElementById("profile-stat-copies");
+    var statUpvotesEl = document.getElementById("profile-stat-upvotes");
+    if (statSnippetsEl) statSnippetsEl.innerText = snippetCount;
+    if (statCopiesEl) statCopiesEl.innerText = totalCopies;
+    if (statUpvotesEl) statUpvotesEl.innerText = totalUpvotes;
+
+    var achFirstCard = document.getElementById("ach-first-step");
+    var achFirstFill = document.getElementById("ach-first-fill");
+    var achFirstText = document.getElementById("ach-first-text");
+    if (achFirstCard) {
+      if (snippetCount >= 1) {
+        achFirstCard.classList.remove("locked");
+        achFirstCard.classList.add("unlocked");
+      } else {
+        achFirstCard.classList.remove("unlocked");
+        achFirstCard.classList.add("locked");
+      }
+    }
+    if (achFirstFill) achFirstFill.style.width = Math.min(snippetCount, 1) * 100 + "%";
+    if (achFirstText) achFirstText.innerText = Math.min(snippetCount, 1) + " / 1 snippet";
+
+    var achArtisanCard = document.getElementById("ach-artisan");
+    var achArtisanFill = document.getElementById("ach-artisan-fill");
+    var achArtisanText = document.getElementById("ach-artisan-text");
+    if (achArtisanCard) {
+      if (snippetCount >= 5) {
+        achArtisanCard.classList.remove("locked");
+        achArtisanCard.classList.add("unlocked");
+      } else {
+        achArtisanCard.classList.remove("unlocked");
+        achArtisanCard.classList.add("locked");
+      }
+    }
+    if (achArtisanFill) achArtisanFill.style.width = Math.min(snippetCount / 5, 1) * 100 + "%";
+    if (achArtisanText) achArtisanText.innerText = Math.min(snippetCount, 5) + " / 5 snippet";
+
+    var achViralCard = document.getElementById("ach-viral");
+    var achViralFill = document.getElementById("ach-viral-fill");
+    var achViralText = document.getElementById("ach-viral-text");
+    if (achViralCard) {
+      if (totalCopies >= 10) {
+        achViralCard.classList.remove("locked");
+        achViralCard.classList.add("unlocked");
+      } else {
+        achViralCard.classList.remove("unlocked");
+        achViralCard.classList.add("locked");
+      }
+    }
+    if (achViralFill) achViralFill.style.width = Math.min(totalCopies / 10, 1) * 100 + "%";
+    if (achViralText) achViralText.innerText = Math.min(totalCopies, 10) + " / 10 kopyalanma";
 
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -2513,6 +2682,97 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     });
   }
+  var currentRandomSnippet = null;
+
+  function showRandomSnippet() {
+    var list = cachedSnippets && cachedSnippets.length > 0 ? cachedSnippets : [];
+    if (list.length === 0) {
+      alert("Henuz gosterilecek kod parcacigi bulunmuyor. Once Kesfet sekmesini ziyaret edin.");
+      return;
+    }
+    var idx = Math.floor(Math.random() * list.length);
+    var snippet = list[idx];
+    currentRandomSnippet = snippet;
+
+    var titleEl = document.getElementById("random-snippet-title");
+    var metaEl = document.getElementById("random-snippet-meta");
+    var codeEl = document.getElementById("random-snippet-code");
+
+    if (titleEl) titleEl.innerText = snippet.title || "Basliksiz";
+    if (metaEl) {
+      var authorInfo = resolveSnippetAuthor(snippet, cachedUsers);
+      metaEl.innerHTML =
+        '<span>' + escapeHtml(snippet.language || "Bilinmiyor") + '</span>' +
+        '<span>' + escapeHtml(snippet.expertise_area || "Genel") + '</span>' +
+        '<span>' + escapeHtml(authorInfo.authorName) + '</span>';
+    }
+    if (codeEl) codeEl.textContent = snippet.code_content || "";
+
+    var overlay = document.getElementById("random-snippet-overlay");
+    if (overlay) overlay.classList.add("active");
+  }
+
+  function closeRandomModal() {
+    var overlay = document.getElementById("random-snippet-overlay");
+    if (overlay) overlay.classList.remove("active");
+    currentRandomSnippet = null;
+  }
+
+  var btnRandomSnippet = document.getElementById("btn-random-snippet");
+  if (btnRandomSnippet) {
+    btnRandomSnippet.addEventListener("click", function () {
+      showRandomSnippet();
+    });
+  }
+
+  var randomModalCloseBtn = document.getElementById("random-modal-close");
+  if (randomModalCloseBtn) {
+    randomModalCloseBtn.addEventListener("click", closeRandomModal);
+  }
+
+  var randomOverlay = document.getElementById("random-snippet-overlay");
+  if (randomOverlay) {
+    randomOverlay.addEventListener("click", function (e) {
+      if (e.target === randomOverlay) {
+        closeRandomModal();
+      }
+    });
+  }
+
+  var btnRandomAgain = document.getElementById("btn-random-again");
+  if (btnRandomAgain) {
+    btnRandomAgain.addEventListener("click", function () {
+      showRandomSnippet();
+    });
+  }
+
+  var btnRandomCopy = document.getElementById("btn-random-copy");
+  if (btnRandomCopy) {
+    btnRandomCopy.addEventListener("click", function () {
+      if (currentRandomSnippet && currentRandomSnippet.code_content) {
+        copyTextToClipboard(currentRandomSnippet.code_content, function () {
+          btnRandomCopy.innerHTML =
+            '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Kopyalandi';
+          setTimeout(function () {
+            btnRandomCopy.innerHTML =
+              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Kopyala';
+          }, 2000);
+          if (currentRandomSnippet.id) {
+            incrementCopyCount(currentRandomSnippet.id);
+          }
+        });
+      }
+    });
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      var overlay = document.getElementById("random-snippet-overlay");
+      if (overlay && overlay.classList.contains("active")) {
+        closeRandomModal();
+      }
+    }
+  });
 
   checkInitialSession();
 });

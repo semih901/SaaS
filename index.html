@@ -485,9 +485,15 @@
         </div>
 
         <div class="tab-panel" id="tab-snippets">
-          <div class="tab-header">
-            <h2 class="tab-title">Kesfet</h2>
-            <p class="tab-desc">Topluluk tarafindan paylasilan kod parcaciklarini gercek zamanli olarak inceleyin.</p>
+          <div class="tab-header" style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+            <div>
+              <h2 class="tab-title">Kesfet</h2>
+              <p class="tab-desc">Topluluk tarafindan paylasilan kod parcaciklarini gercek zamanli olarak inceleyin.</p>
+            </div>
+            <button type="button" class="btn-random-snippet" id="btn-random-snippet">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="22" height="22" rx="4" ry="4"></rect><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="16" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="8" cy="16" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"></circle></svg>
+              Rastgele Kod
+            </button>
           </div>
           <div class="expertise-filter-bar" id="expertise-filter">
             <button class="filter-btn active" data-filter="all">Tumunu Goster</button>
@@ -698,6 +704,58 @@
             <div class="public-profile-stats">
               <span class="public-profile-stat-badge" id="public-profile-snippet-count">0 Kod Parcacigi</span>
             </div>
+            <div class="profile-stats-dashboard" id="profile-stats-dashboard">
+              <div class="profile-stat-item">
+                <div class="profile-stat-value" id="profile-stat-snippets">0</div>
+                <div class="profile-stat-label">Paylasim</div>
+              </div>
+              <div class="profile-stat-item">
+                <div class="profile-stat-value" id="profile-stat-copies">0</div>
+                <div class="profile-stat-label">Kopyalanma</div>
+              </div>
+              <div class="profile-stat-item">
+                <div class="profile-stat-value" id="profile-stat-upvotes">0</div>
+                <div class="profile-stat-label">Oy</div>
+              </div>
+            </div>
+            <div class="achievements-section" id="achievements-section">
+              <div class="achievements-title">Basarimlar</div>
+              <div class="achievements-grid" id="achievements-grid">
+                <div class="achievement-card achievement-first locked" id="ach-first-step">
+                  <div class="achievement-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                  </div>
+                  <div class="achievement-name">Ilk Adim</div>
+                  <div class="achievement-desc">Ilk snippet yayinlandi</div>
+                  <div class="achievement-progress">
+                    <div class="achievement-progress-bar"><div class="achievement-progress-fill" id="ach-first-fill" style="width: 0%"></div></div>
+                    <div class="achievement-progress-text" id="ach-first-text">0 / 1 snippet</div>
+                  </div>
+                </div>
+                <div class="achievement-card achievement-artisan locked" id="ach-artisan">
+                  <div class="achievement-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                  </div>
+                  <div class="achievement-name">Code Artisan</div>
+                  <div class="achievement-desc">5+ snippet paylasti</div>
+                  <div class="achievement-progress">
+                    <div class="achievement-progress-bar"><div class="achievement-progress-fill" id="ach-artisan-fill" style="width: 0%"></div></div>
+                    <div class="achievement-progress-text" id="ach-artisan-text">0 / 5 snippet</div>
+                  </div>
+                </div>
+                <div class="achievement-card achievement-viral locked" id="ach-viral">
+                  <div class="achievement-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                  </div>
+                  <div class="achievement-name">Viral Author</div>
+                  <div class="achievement-desc">10+ kopyalanma</div>
+                  <div class="achievement-progress">
+                    <div class="achievement-progress-bar"><div class="achievement-progress-fill" id="ach-viral-fill" style="width: 0%"></div></div>
+                    <div class="achievement-progress-text" id="ach-viral-text">0 / 10 kopyalanma</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="public-profile-snippets-wrap">
             <div class="tab-header">
@@ -706,6 +764,36 @@
             </div>
             <div id="public-profile-snippets-feed"></div>
             <div class="empty-state" id="public-profile-empty" style="display: none;">Bu kullanici henuz herkese acik kod parcacigi paylasmamis.</div>
+          </div>
+        </div>
+        <div class="random-snippet-overlay" id="random-snippet-overlay">
+          <div class="random-snippet-modal" id="random-snippet-modal">
+            <div class="random-modal-header">
+              <div class="random-modal-title">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="22" height="22" rx="4" ry="4"></rect><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none"></circle></svg>
+                Rastgele Kod Parcacigi
+              </div>
+              <button type="button" class="random-modal-close" id="random-modal-close">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </button>
+            </div>
+            <div class="random-modal-body" id="random-modal-body">
+              <div class="random-modal-snippet-title" id="random-snippet-title">Yukleniyor...</div>
+              <div class="random-modal-snippet-meta" id="random-snippet-meta"></div>
+              <div class="random-modal-code-block">
+                <pre><code id="random-snippet-code"></code></pre>
+              </div>
+              <div class="random-modal-footer">
+                <button type="button" class="btn-random-again" id="btn-random-again">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                  Baska Bir Kod
+                </button>
+                <button type="button" class="btn-random-copy" id="btn-random-copy">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  Kopyala
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </main>
