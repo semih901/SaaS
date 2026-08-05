@@ -3,8 +3,6 @@ const SUPABASE_CONFIG = {
   anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3cHl0bXRrZGVqd3p4ZXBpbWpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4MzgwODEsImV4cCI6MjEwMTQxNDA4MX0.R48W94A-ut7OklGsxDoNxpqpvdfQA1zjjXiRt5qcM_w"
 };
 
-const ADMIN_EMAIL = "semihcifci100@gmail.com";
-
 document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
 
@@ -34,9 +32,54 @@ document.addEventListener("DOMContentLoaded", function () {
   var activeExpertiseFilter = "all";
   var isRefreshingData = false;
 
-  function isAdmin(email) {
-    if (!email) return false;
-    return String(email).trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  function isAdmin(userOrRole) {
+    if (!userOrRole) return false;
+    if (typeof userOrRole === "string") {
+      return userOrRole.toLowerCase() === "admin";
+    }
+    if (typeof userOrRole === "object") {
+      return userOrRole.role === "admin";
+    }
+    return false;
+  }
+
+  async function fetchUserProfileAndRole(userId, email, meta) {
+    var client = getSupabaseClient();
+    var role = "user";
+    var username = (meta && (meta.username || meta.full_name || meta.preferred_username)) || (email ? email.split("@")[0] : "Gelistirici");
+    var avatar_url = (meta && meta.avatar_url) || "";
+    var bio = (meta && meta.bio) || "";
+
+    if (client && userId) {
+      try {
+        var res = await client.from("profiles").select("id, username, avatar_url, bio, role").eq("id", userId).maybeSingle();
+        if (res && res.data) {
+          role = res.data.role || "user";
+          username = res.data.username || username;
+          avatar_url = res.data.avatar_url || avatar_url;
+          bio = res.data.bio || bio;
+        } else {
+          var userRes = await client.from("users").select("id, username, avatar_url, bio, role").eq("id", userId).maybeSingle();
+          if (userRes && userRes.data) {
+            role = userRes.data.role || "user";
+            username = userRes.data.username || username;
+            avatar_url = userRes.data.avatar_url || avatar_url;
+            bio = userRes.data.bio || bio;
+          }
+        }
+      } catch (e) {
+        console.warn("Profil ve rol bilgisi sorgulama uyarisi:", e);
+      }
+    }
+
+    return {
+      id: userId,
+      email: email,
+      username: username,
+      avatar_url: avatar_url,
+      bio: bio,
+      role: role
+    };
   }
 
   function ts() {
@@ -165,7 +208,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function applyRolePermissions() {
-    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    var isUserAdmin = currentUser && currentUser.role === "admin";
     var usersTabBtn = document.querySelector('.sidebar-item[data-tab="tab-users"]');
     var dbTabBtn = document.querySelector('.sidebar-item[data-tab="tab-database"]');
 
@@ -355,11 +398,12 @@ document.addEventListener("DOMContentLoaded", function () {
       var view = this.getAttribute("data-view");
       if (view === "dashboard" && !currentUser) {
         currentUser = {
-          id: "admin-session",
-          email: ADMIN_EMAIL,
-          username: "semih",
+          id: "guest-session",
+          email: "misafir@sniphub.io",
+          username: "Misafir",
           avatar_url: "",
-          bio: ""
+          bio: "",
+          role: "user"
         };
       }
       showView(view);
@@ -427,7 +471,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (res.error) throw res.error;
 
     var userId = res.data.user ? res.data.user.id : null;
-    var userRole = isAdmin(email) ? "admin" : "user";
+    var userRole = "user";
     var userRecord = {
       username: username,
       email: email,
@@ -443,6 +487,20 @@ document.addEventListener("DOMContentLoaded", function () {
     var insertRes = await client.from("users").insert([userRecord]);
     if (insertRes.error) {
       await client.from("users").upsert(userRecord);
+    }
+
+    if (userId) {
+      try {
+        await client.from("profiles").upsert({
+          id: userId,
+          username: username,
+          full_name: username,
+          bio: "",
+          avatar_url: "",
+          role: userRole,
+          updated_at: new Date().toISOString()
+        });
+      } catch (pe) {}
     }
 
     var t1 = performance.now();
@@ -1581,19 +1639,13 @@ document.addEventListener("DOMContentLoaded", function () {
       try {
         var data = await cloudSignIn(email, pass, captchaToken);
         var u = data.user;
-        var metaName = (u && u.user_metadata && u.user_metadata.username) || email.split("@")[0];
-        var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || "";
-        var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
+        currentUser = await fetchUserProfileAndRole(
+          u ? u.id : null,
+          u ? u.email : email,
+          u ? u.user_metadata : null
+        );
 
-        currentUser = {
-          id: u ? u.id : "user-id",
-          email: u ? u.email : email,
-          username: metaName,
-          avatar_url: metaAvatar,
-          bio: metaBio
-        };
-
-        var roleLabel = isAdmin(currentUser.email) ? "Yonetici (Admin)" : "Gelistirici";
+        var roleLabel = currentUser.role === "admin" ? "Yonetici (Admin)" : "Gelistirici";
         addLog(currentUser.username + " bulut oturumu dogrulandi -- Rol: " + roleLabel);
         loginForm.reset();
         resetSnippetFormState();
@@ -1617,7 +1669,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!tbody) return;
     tbody.innerHTML = "";
 
-    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    var isUserAdmin = currentUser && currentUser.role === "admin";
     if (!isUserAdmin) {
       if (emptyEl) {
         emptyEl.style.display = "block";
@@ -1655,7 +1707,7 @@ document.addEventListener("DOMContentLoaded", function () {
       var letter = displayName.trim().charAt(0).toUpperCase() || "U";
       var avatarUrl = (user.avatar_url || "").trim();
       var isSelf = currentUser && (currentUser.email === user.email || currentUser.id === user.id);
-      var isCurrentAdmin = isAdmin(user.email) || user.role === "admin";
+      var isCurrentAdmin = user.role === "admin";
 
       var avatarHtml = "";
       if (avatarUrl) {
@@ -1731,7 +1783,7 @@ document.addEventListener("DOMContentLoaded", function () {
     var countBadge = document.getElementById("db-terminal-count");
     if (!output) return;
 
-    var isUserAdmin = currentUser && isAdmin(currentUser.email);
+    var isUserAdmin = currentUser && currentUser.role === "admin";
     if (!isUserAdmin) {
       output.innerHTML = highlightJsonSyntax("[]");
       if (countBadge) countBadge.innerText = "0 kayit";
@@ -1779,7 +1831,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var dbCopyBtn = document.getElementById("db-copy-btn");
   if (dbCopyBtn) {
     dbCopyBtn.addEventListener("click", function () {
-      var isUserAdmin = currentUser && isAdmin(currentUser.email);
+      var isUserAdmin = currentUser && currentUser.role === "admin";
       var dataList = isUserAdmin ? (cachedUsers || []) : [];
       var search = document.getElementById("db-search");
       var q = search ? search.value.trim().toLowerCase() : "";
@@ -2177,7 +2229,7 @@ document.addEventListener("DOMContentLoaded", function () {
                   id: row.id || undefined,
                   username: row.username || "Kullanici",
                   email: row.email || ("user" + i + "@sniphub.cloud"),
-                  role: row.role || (isAdmin(row.email) ? "admin" : "user"),
+                  role: row.role || "user",
                   bio: row.bio || "",
                   avatar_url: row.avatar_url || "",
                   created_at: row.created_at || new Date().toISOString()
@@ -2388,11 +2440,16 @@ document.addEventListener("DOMContentLoaded", function () {
       var client = getSupabaseClient();
       if (client && currentUser && currentUser.id) {
         try {
-          var meRes = await client.from("users").select("username, bio, avatar_url").eq("id", currentUser.id).maybeSingle();
+          var meRes = await client.from("profiles").select("username, bio, avatar_url, role").eq("id", currentUser.id).maybeSingle();
+          if (!meRes || !meRes.data) {
+            meRes = await client.from("users").select("username, bio, avatar_url, role").eq("id", currentUser.id).maybeSingle();
+          }
           if (meRes && meRes.data) {
             currentUser.username = meRes.data.username || currentUser.username;
             currentUser.bio = meRes.data.bio || currentUser.bio || "";
             currentUser.avatar_url = meRes.data.avatar_url || currentUser.avatar_url || "";
+            currentUser.role = meRes.data.role || currentUser.role || "user";
+            applyRolePermissions();
             updateDashHeader();
           }
         } catch (e) {}
@@ -2446,11 +2503,12 @@ document.addEventListener("DOMContentLoaded", function () {
   async function initDashboard(preserveActiveTab) {
     if (!currentUser) {
       currentUser = {
-        id: "admin-session",
-        email: ADMIN_EMAIL,
-        username: "semih",
+        id: "guest-session",
+        email: "misafir@sniphub.io",
+        username: "Misafir",
         avatar_url: "",
-        bio: ""
+        bio: "",
+        role: "user"
       };
     }
     applyRolePermissions();
@@ -2496,17 +2554,14 @@ document.addEventListener("DOMContentLoaded", function () {
         var res = await client.auth.getSession();
         if (res.data && res.data.session) {
           var u = res.data.session.user;
-          var metaName = (u && u.user_metadata && u.user_metadata.username) || (u && u.user_metadata && u.user_metadata.full_name) || (u && u.email ? u.email.split("@")[0] : "Gelistirici");
-          var metaAvatar = (u && u.user_metadata && u.user_metadata.avatar_url) || "";
-          var metaBio = (u && u.user_metadata && u.user_metadata.bio) || "";
-
-          currentUser = {
-            id: u.id,
-            email: u.email,
-            username: metaName,
-            avatar_url: metaAvatar,
-            bio: metaBio
-          };
+          currentUser = await fetchUserProfileAndRole(
+            u.id,
+            u.email,
+            u.user_metadata
+          );
+          applyRolePermissions();
+          updateNavState();
+          updateDashHeader();
           showView("dashboard");
           return;
         }
@@ -2515,42 +2570,52 @@ document.addEventListener("DOMContentLoaded", function () {
       client.auth.onAuthStateChange(async function (event, session) {
         if (event === "SIGNED_IN" && session && session.user) {
           var u = session.user;
-          var metaName = (u.user_metadata && u.user_metadata.username) || (u.user_metadata && u.user_metadata.full_name) || (u.user_metadata && u.user_metadata.preferred_username) || u.email.split("@")[0];
-          var metaAvatar = (u.user_metadata && u.user_metadata.avatar_url) || "";
-          var metaBio = (u.user_metadata && u.user_metadata.bio) || "";
-
-          currentUser = {
-            id: u.id,
-            email: u.email,
-            username: metaName,
-            avatar_url: metaAvatar,
-            bio: metaBio
-          };
+          currentUser = await fetchUserProfileAndRole(
+            u.id,
+            u.email,
+            u.user_metadata
+          );
 
           var provider = (u.app_metadata && u.app_metadata.provider) || "email";
           if (provider === "github" || provider === "google") {
             var cl = getSupabaseClient();
             if (cl) {
-              var checkRes = await cl.from("users").select("id, username, bio, avatar_url").eq("id", u.id).maybeSingle();
-              if (!checkRes.data) {
-                var userRole = isAdmin(u.email) ? "admin" : "user";
-                await cl.from("users").insert([{
-                  id: u.id,
-                  username: metaName,
-                  email: u.email,
-                  role: userRole,
-                  bio: metaBio,
-                  avatar_url: metaAvatar,
-                  created_at: new Date().toISOString()
-                }]);
-                addLog((provider === "google" ? "Google" : "GitHub") + " OAuth ile yeni kullanici kaydedildi: " + metaName);
+              var checkRes = await cl.from("profiles").select("id, username, bio, avatar_url, role").eq("id", u.id).maybeSingle();
+              if (!checkRes || !checkRes.data) {
+                var checkUserRes = await cl.from("users").select("id, username, bio, avatar_url, role").eq("id", u.id).maybeSingle();
+                if (!checkUserRes || !checkUserRes.data) {
+                  var defaultRole = "user";
+                  var userRecord = {
+                    id: u.id,
+                    username: currentUser.username,
+                    email: u.email,
+                    role: defaultRole,
+                    bio: currentUser.bio,
+                    avatar_url: currentUser.avatar_url,
+                    created_at: new Date().toISOString()
+                  };
+                  await cl.from("users").insert([userRecord]);
+                  try {
+                    await cl.from("profiles").insert([{
+                      id: u.id,
+                      username: currentUser.username,
+                      full_name: currentUser.username,
+                      bio: currentUser.bio,
+                      avatar_url: currentUser.avatar_url,
+                      role: defaultRole,
+                      updated_at: new Date().toISOString()
+                    }]);
+                  } catch (pe) {}
+                  addLog((provider === "google" ? "Google" : "GitHub") + " OAuth ile yeni kullanici kaydedildi: " + currentUser.username);
+                } else {
+                  currentUser.role = checkUserRes.data.role || "user";
+                }
               } else {
-                currentUser.username = checkRes.data.username || currentUser.username;
-                currentUser.bio = checkRes.data.bio || currentUser.bio;
-                currentUser.avatar_url = checkRes.data.avatar_url || currentUser.avatar_url;
+                currentUser.role = checkRes.data.role || "user";
               }
             }
           }
+          applyRolePermissions();
           updateNavState();
           updateDashHeader();
           var dashView = document.getElementById("view-dashboard");
@@ -2560,23 +2625,12 @@ document.addEventListener("DOMContentLoaded", function () {
           }
         } else if (session && session.user) {
           var u2 = session.user;
-          var metaName2 = (u2.user_metadata && u2.user_metadata.username) || (u2.user_metadata && u2.user_metadata.preferred_username) || u2.email.split("@")[0];
-          var metaAvatar2 = (u2.user_metadata && u2.user_metadata.avatar_url) || "";
-          var metaBio2 = (u2.user_metadata && u2.user_metadata.bio) || "";
-
-          if (currentUser) {
-            currentUser.username = metaName2 || currentUser.username;
-            currentUser.avatar_url = metaAvatar2 || currentUser.avatar_url;
-            currentUser.bio = metaBio2 || currentUser.bio;
-          } else {
-            currentUser = {
-              id: u2.id,
-              email: u2.email,
-              username: metaName2,
-              avatar_url: metaAvatar2,
-              bio: metaBio2
-            };
-          }
+          currentUser = await fetchUserProfileAndRole(
+            u2.id,
+            u2.email,
+            u2.user_metadata
+          );
+          applyRolePermissions();
           updateNavState();
           updateDashHeader();
         } else {
