@@ -9,7 +9,7 @@ async function signInWithGitHub() {
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'github',
     options: {
-      redirectTo: 'https://siteniz.com'
+      redirectTo: 'https://saas-theta-ochre.vercel.app'
     }
   })
 }
