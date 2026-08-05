@@ -189,6 +189,9 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function showView(name) {
+    var currentActiveView = document.querySelector(".view.active");
+    var isAlreadyDashboard = currentActiveView && currentActiveView.id === "view-dashboard" && name === "dashboard";
+
     document.querySelectorAll(".view").forEach(function (v) { v.classList.remove("active"); });
     var target = document.getElementById("view-" + name);
     if (target) target.classList.add("active");
@@ -200,11 +203,13 @@ document.addEventListener("DOMContentLoaded", function () {
       if (landingNav) landingNav.style.display = "";
     }
 
-    if (name !== "landing") window.scrollTo(0, 0);
+    if (name !== "landing" && !isAlreadyDashboard) window.scrollTo(0, 0);
     updateNavState();
 
     if (name === "dashboard") {
-      initDashboard();
+      if (!isAlreadyDashboard) {
+        initDashboard(false);
+      }
     } else {
       if (autoSyncInterval) {
         clearInterval(autoSyncInterval);
@@ -525,19 +530,25 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     var t0 = performance.now();
 
+    var cleanId = currentUser.id;
+    var cleanEmail = currentUser.email;
+
     try {
       await client.auth.updateUser({
         data: {
           username: newUsername,
+          full_name: newUsername,
           avatar_url: newAvatarUrl,
           bio: newBio
         }
       });
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Auth metadata uyarisi:", e);
+    }
 
     var upsertPayload = {
-      id: currentUser.id,
-      email: currentUser.email,
+      id: cleanId,
+      email: cleanEmail,
       username: newUsername,
       avatar_url: newAvatarUrl,
       bio: newBio
@@ -549,20 +560,42 @@ document.addEventListener("DOMContentLoaded", function () {
         username: newUsername,
         avatar_url: newAvatarUrl,
         bio: newBio
-      }).eq("id", currentUser.id);
+      }).eq("id", cleanId);
 
       if (updateRes.error) {
         await client.from("users").update({
           username: newUsername,
           avatar_url: newAvatarUrl,
           bio: newBio
-        }).eq("email", currentUser.email);
+        }).eq("email", cleanEmail);
       }
     }
+
+    try {
+      await client.from("profiles").upsert({
+        id: cleanId,
+        username: newUsername,
+        full_name: newUsername,
+        avatar_url: newAvatarUrl,
+        bio: newBio,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "id" });
+    } catch (e) {}
 
     currentUser.username = newUsername;
     currentUser.avatar_url = newAvatarUrl;
     currentUser.bio = newBio;
+
+    if (cachedUsers && cachedUsers.length > 0) {
+      var me = cachedUsers.find(function (u) {
+        return (cleanId && u.id === cleanId) || (cleanEmail && u.email === cleanEmail);
+      });
+      if (me) {
+        me.username = newUsername;
+        me.avatar_url = newAvatarUrl;
+        me.bio = newBio;
+      }
+    }
 
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
@@ -1715,31 +1748,142 @@ document.addEventListener("DOMContentLoaded", function () {
   var editAvatarPreviewImg = document.getElementById("edit-avatar-preview-img");
   var editAvatarPreviewFallback = document.getElementById("edit-avatar-preview-fallback");
   var avatarFileName = document.getElementById("avatar-file-name");
+  var avatarUploadStatus = document.getElementById("avatar-upload-status");
+  var cachedCompressedAvatarBlob = null;
 
-  if (editAvatarFileInput) {
-    editAvatarFileInput.addEventListener("change", function (e) {
-      var file = e.target.files[0];
-      if (!file) {
-        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
-        return;
+  function compressImage(file, maxWidth, maxHeight, quality) {
+    maxWidth = maxWidth || 400;
+    maxHeight = maxHeight || 400;
+    quality = (typeof quality === "number") ? quality : 0.8;
+
+    return new Promise(function (resolve, reject) {
+      if (!file || !file.type || !file.type.match(/^image\//i)) {
+        return reject(new Error("Lutfen gecerli bir gorsel dosyasi secin (JPG, PNG, WEBP)."));
       }
-      if (file.size > 5 * 1024 * 1024) {
-        showAlert("edit-profile-alert", "Gorsel boyutu en fazla 5MB olabilir.", "error");
-        editAvatarFileInput.value = "";
-        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
-        return;
-      }
-      if (avatarFileName) avatarFileName.innerText = file.name;
 
       var reader = new FileReader();
-      reader.onload = function (evt) {
+      reader.onerror = function () {
+        reject(new Error("Gorsel dosyasi okunamadi."));
+      };
+
+      reader.onload = function (readerEvent) {
+        var img = new Image();
+        img.onerror = function () {
+          reject(new Error("Gorsel yuklenirken hata olustu. Dosya bozuk olabilir."));
+        };
+
+        img.onload = function () {
+          try {
+            var width = img.width;
+            var height = img.height;
+
+            if (width > height) {
+              if (width > maxWidth) {
+                height = Math.round((height * maxWidth) / width);
+                width = maxWidth;
+              }
+            } else {
+              if (height > maxHeight) {
+                width = Math.round((width * maxHeight) / height);
+                height = maxHeight;
+              }
+            }
+
+            var canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+
+            var ctx = canvas.getContext("2d");
+            if (!ctx) {
+              return reject(new Error("Canvas destegi saglanamadi."));
+            }
+
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+
+            var outputMime = "image/jpeg";
+            var dataUrl = canvas.toDataURL(outputMime, quality);
+
+            canvas.toBlob(
+              function (blob) {
+                if (!blob) {
+                  return reject(new Error("Gorsel sikistirma basarisiz oldu."));
+                }
+                resolve({
+                  blob: blob,
+                  dataUrl: dataUrl,
+                  width: width,
+                  height: height,
+                  originalSize: file.size,
+                  compressedSize: blob.size
+                });
+              },
+              outputMime,
+              quality
+            );
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        img.src = readerEvent.target.result;
+      };
+
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (editAvatarFileInput) {
+    editAvatarFileInput.addEventListener("change", async function (e) {
+      var file = e.target.files[0];
+      cachedCompressedAvatarBlob = null;
+      hideAlert("edit-profile-alert");
+
+      if (!file) {
+        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
+        if (avatarUploadStatus) {
+          avatarUploadStatus.style.display = "none";
+          avatarUploadStatus.innerHTML = "";
+        }
+        return;
+      }
+
+      if (avatarFileName) avatarFileName.innerText = file.name;
+      if (avatarUploadStatus) {
+        avatarUploadStatus.style.display = "flex";
+        avatarUploadStatus.innerHTML = '<span class="spinner-sm dark"></span> Gorsel sikistiriliyor ve optimize ediliyor...';
+      }
+
+      try {
+        var compRes = await compressImage(file, 400, 400, 0.8);
+        cachedCompressedAvatarBlob = compRes.blob;
+
         if (editAvatarPreviewImg && editAvatarPreviewFallback) {
-          editAvatarPreviewImg.src = evt.target.result;
+          editAvatarPreviewImg.src = compRes.dataUrl;
           editAvatarPreviewImg.style.display = "block";
           editAvatarPreviewFallback.style.display = "none";
         }
-      };
-      reader.readAsDataURL(file);
+
+        var origKb = Math.round(compRes.originalSize / 1024);
+        var compKb = Math.round(compRes.compressedSize / 1024);
+        if (avatarUploadStatus) {
+          avatarUploadStatus.style.display = "flex";
+          avatarUploadStatus.style.color = "#15803d";
+          avatarUploadStatus.innerHTML = compRes.width + "x" + compRes.height + "px (" + compKb + " KB, %80 kalite) hazir";
+        }
+        addLog("Profil fotografi istemcide optimize edildi: " + origKb + " KB -> " + compKb + " KB (" + compRes.width + "x" + compRes.height + "px)");
+      } catch (err) {
+        cachedCompressedAvatarBlob = null;
+        editAvatarFileInput.value = "";
+        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
+        if (avatarUploadStatus) {
+          avatarUploadStatus.style.display = "none";
+          avatarUploadStatus.innerHTML = "";
+        }
+        console.error("Gorsel sikistirma hatasi:", err);
+        showAlert("edit-profile-alert", "Gorsel optimizasyon hatasi: " + (err.message || err), "error");
+      }
     });
   }
 
@@ -1753,11 +1897,17 @@ document.addEventListener("DOMContentLoaded", function () {
     var prevImg = document.getElementById("edit-avatar-preview-img");
     var prevFallback = document.getElementById("edit-avatar-preview-fallback");
 
+    cachedCompressedAvatarBlob = null;
+
     if (un) un.value = currentUser.username || "";
     if (bio) bio.value = currentUser.bio || "";
     if (charNum) charNum.innerText = (currentUser.bio || "").length;
     if (fileInput) fileInput.value = "";
     if (fileName) fileName.innerText = "Dosya secilmedi";
+    if (avatarUploadStatus) {
+      avatarUploadStatus.style.display = "none";
+      avatarUploadStatus.innerHTML = "";
+    }
 
     var avatarUrl = (currentUser.avatar_url || "").trim();
     var letter = (currentUser.username || currentUser.email || "U").trim().charAt(0).toUpperCase();
@@ -1796,11 +1946,13 @@ document.addEventListener("DOMContentLoaded", function () {
   if (editProfileForm) {
     editProfileForm.addEventListener("submit", async function (e) {
       e.preventDefault();
+      e.stopPropagation();
       hideAlert("edit-profile-alert");
+
       var btn = document.getElementById("edit-profile-submit-btn");
       var newUsername = document.getElementById("edit-username").value.trim();
       var newBio = document.getElementById("edit-bio").value.trim();
-      var avatarFile = editAvatarFileInput && editAvatarFileInput.files ? editAvatarFileInput.files[0] : null;
+      var rawAvatarFile = editAvatarFileInput && editAvatarFileInput.files ? editAvatarFileInput.files[0] : null;
 
       if (!newUsername) {
         showAlert("edit-profile-alert", "Kullanici adi bos birakilamaz.", "error");
@@ -1811,46 +1963,97 @@ document.addEventListener("DOMContentLoaded", function () {
         return;
       }
 
+      var origBtnHtml = btn ? btn.innerHTML : "Degisiklikleri Kaydet";
       if (btn) {
         btn.disabled = true;
-        btn.innerText = "Bulutta Guncelleniyor...";
+        btn.innerHTML = '<span class="spinner-sm"></span> Kaydediliyor...';
       }
 
       try {
-        var newAvatarUrl = currentUser.avatar_url || "";
-        if (avatarFile) {
-          var client = getSupabaseClient();
-          if (client) {
-            var ext = avatarFile.name.split(".").pop().toLowerCase() || "png";
-            var fileName = (currentUser.id || "user") + "-" + Date.now() + "." + ext;
-            var uploadRes = await client.storage.from("avatars").upload(fileName, avatarFile, {
-              upsert: true,
-              cacheControl: "3600"
-            });
+        var newAvatarUrl = (currentUser && currentUser.avatar_url) ? currentUser.avatar_url : "";
+        var uploadBlob = cachedCompressedAvatarBlob;
 
-            if (uploadRes.error) {
-              addLog("Storage uyarisi: " + uploadRes.error.message);
-            } else {
-              var publicData = client.storage.from("avatars").getPublicUrl(fileName);
-              if (publicData && publicData.data && publicData.data.publicUrl) {
-                newAvatarUrl = publicData.data.publicUrl;
-              }
-            }
+        // 1. Gorsel Sikistirma (Eger henuz yapilmadiysa)
+        if (!uploadBlob && rawAvatarFile) {
+          if (btn) btn.innerHTML = '<span class="spinner-sm"></span> Gorsel Sikistiriliyor...';
+          var comp = await compressImage(rawAvatarFile, 400, 400, 0.8);
+          uploadBlob = comp.blob;
+        }
+
+        // 2. Storage Yukleme (Once resim upload islemi tamamlansin)
+        if (uploadBlob) {
+          if (btn) btn.innerHTML = '<span class="spinner-sm"></span> Profil Fotografi Yukleniyor...';
+          var client = getSupabaseClient();
+          if (!client) {
+            throw new Error("Supabase baglantisi kurulamadi.");
+          }
+
+          var safeUserId = (currentUser && currentUser.id ? currentUser.id : "user").toString().replace(/[^a-zA-Z0-9_-]/g, "_");
+          var fileName = "avatar_" + safeUserId + "_" + Date.now() + ".jpg";
+
+          var uploadPromise = client.storage.from("avatars").upload(fileName, uploadBlob, {
+            contentType: "image/jpeg",
+            upsert: true,
+            cacheControl: "3600"
+          });
+
+          var timeoutPromise = new Promise(function (_, reject) {
+            setTimeout(function () {
+              reject(new Error("Gorsel yukleme islemi zaman asimina ugradi (20s). Mobil ag baglantinizi kontrol edin."));
+            }, 20000);
+          });
+
+          var uploadRes = await Promise.race([uploadPromise, timeoutPromise]);
+
+          if (uploadRes.error) {
+            console.error("Supabase Storage Upload Hatasi:", uploadRes.error);
+            throw new Error("Profil fotografi yuklenemedi: " + (uploadRes.error.message || "Depolama hatasi"));
+          }
+
+          var publicData = client.storage.from("avatars").getPublicUrl(fileName);
+          if (publicData && publicData.data && publicData.data.publicUrl) {
+            var rawPublicUrl = publicData.data.publicUrl;
+            // Cache-busting: add timestamp query parameter to force fresh display
+            newAvatarUrl = rawPublicUrl + (rawPublicUrl.indexOf("?") === -1 ? "?t=" : "&t=") + Date.now();
+            addLog("Yeni profil fotografi Storage'a yuklendi: " + fileName + " (" + Math.round(uploadBlob.size / 1024) + " KB)");
           }
         }
 
+        // 3. Profil Veritabanini Guncelleme
+        if (btn) btn.innerHTML = '<span class="spinner-sm"></span> Profil Bilgileri Guncelleniyor...';
         await updateUserProfile(newUsername, newAvatarUrl, newBio);
-        showAlert("edit-profile-alert", "Profil basariyla guncellendi.", "success");
-        addLog("Kullanici profili guncellendi (" + newUsername + ")");
+
+        // 4. Form & UI State Temizligi
+        cachedCompressedAvatarBlob = null;
+        if (editAvatarFileInput) editAvatarFileInput.value = "";
+        if (avatarFileName) avatarFileName.innerText = "Dosya secilmedi";
+        if (avatarUploadStatus) {
+          avatarUploadStatus.style.display = "none";
+          avatarUploadStatus.innerHTML = "";
+        }
+
+        // Ekranda profil resmini yeni cache-busted URL ile aninda guncelle
+        if (editAvatarPreviewImg && editAvatarPreviewFallback) {
+          if (newAvatarUrl) {
+            editAvatarPreviewImg.src = newAvatarUrl;
+            editAvatarPreviewImg.style.display = "block";
+            editAvatarPreviewFallback.style.display = "none";
+          }
+        }
+
+        showAlert("edit-profile-alert", "Profil bilgileri ve fotografiniz basariyla guncellendi.", "success");
+        addLog("Kullanici profili basariyla guncellendi (" + newUsername + ")");
         updateDashHeader();
         updateNavState();
         await refreshDashboardData();
       } catch (err) {
-        showAlert("edit-profile-alert", err.message || "Guncelleme sirasinda hata olustu.", "error");
+        console.error("Profil guncelleme hatasi:", err);
+        showAlert("edit-profile-alert", err.message || "Guncelleme sirasinda bir hata olustu. Lutfen tekrar deneyin.", "error");
+        addLog("Profil guncelleme hatasi: " + (err.message || err));
       } finally {
         if (btn) {
           btn.disabled = false;
-          btn.innerText = "Degisiklikleri Kaydet";
+          btn.innerHTML = origBtnHtml;
         }
       }
     });
@@ -2060,7 +2263,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
-  async function initDashboard() {
+  async function initDashboard(preserveActiveTab) {
     if (!currentUser) {
       currentUser = {
         id: "admin-session",
@@ -2072,7 +2275,6 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     applyRolePermissions();
     updateDashHeader();
-    resetSnippetFormState();
 
     if (systemLogs.length === 0) {
       addLog("Sistem cekirdegi ve UI bilesenleri yuklendi");
@@ -2089,16 +2291,22 @@ document.addEventListener("DOMContentLoaded", function () {
     if (autoSyncInterval) clearInterval(autoSyncInterval);
     autoSyncInterval = setInterval(refreshDashboardData, 12000);
 
-    sidebarItems.forEach(function (si) { si.classList.remove("active"); });
-    var firstTab = document.querySelector('.sidebar-item[data-tab="tab-overview"]');
-    if (firstTab) firstTab.classList.add("active");
+    var activeSidebar = document.querySelector(".sidebar-item.active");
+    var activePanel = document.querySelector(".tab-panel.active");
+    var isProfileViewOpen = document.getElementById("public-profile-view") && document.getElementById("public-profile-view").style.display === "block";
 
-    tabPanels.forEach(function (p) { p.classList.remove("active"); });
-    var overviewPanel = document.getElementById("tab-overview");
-    if (overviewPanel) overviewPanel.classList.add("active");
+    if (!preserveActiveTab && !activeSidebar && !activePanel && !isProfileViewOpen) {
+      sidebarItems.forEach(function (si) { si.classList.remove("active"); });
+      var firstTab = document.querySelector('.sidebar-item[data-tab="tab-overview"]');
+      if (firstTab) firstTab.classList.add("active");
 
-    var profileView = document.getElementById("public-profile-view");
-    if (profileView) profileView.style.display = "none";
+      tabPanels.forEach(function (p) { p.classList.remove("active"); });
+      var overviewPanel = document.getElementById("tab-overview");
+      if (overviewPanel) overviewPanel.classList.add("active");
+
+      var profileView = document.getElementById("public-profile-view");
+      if (profileView) profileView.style.display = "none";
+    }
   }
 
   async function checkInitialSession() {
@@ -2163,23 +2371,34 @@ document.addEventListener("DOMContentLoaded", function () {
               }
             }
           }
-          resetSnippetFormState();
           updateNavState();
-          showView("dashboard");
+          updateDashHeader();
+          var dashView = document.getElementById("view-dashboard");
+          var isAlreadyInDashboard = dashView && dashView.classList.contains("active");
+          if (!isAlreadyInDashboard) {
+            showView("dashboard");
+          }
         } else if (session && session.user) {
           var u2 = session.user;
           var metaName2 = (u2.user_metadata && u2.user_metadata.username) || (u2.user_metadata && u2.user_metadata.preferred_username) || u2.email.split("@")[0];
           var metaAvatar2 = (u2.user_metadata && u2.user_metadata.avatar_url) || "";
           var metaBio2 = (u2.user_metadata && u2.user_metadata.bio) || "";
 
-          currentUser = {
-            id: u2.id,
-            email: u2.email,
-            username: metaName2,
-            avatar_url: metaAvatar2,
-            bio: metaBio2
-          };
+          if (currentUser) {
+            currentUser.username = metaName2 || currentUser.username;
+            currentUser.avatar_url = metaAvatar2 || currentUser.avatar_url;
+            currentUser.bio = metaBio2 || currentUser.bio;
+          } else {
+            currentUser = {
+              id: u2.id,
+              email: u2.email,
+              username: metaName2,
+              avatar_url: metaAvatar2,
+              bio: metaBio2
+            };
+          }
           updateNavState();
+          updateDashHeader();
         } else {
           currentUser = null;
           resetSnippetFormState();
