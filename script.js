@@ -163,6 +163,22 @@ document.addEventListener("DOMContentLoaded", function () {
         autoSyncInterval = null;
       }
     }
+
+    // showView fonksiyonunun en altına ekle:
+if (typeof hcaptcha !== "undefined") {
+  setTimeout(function () {
+    document.querySelectorAll(".h-captcha").forEach(function (el) {
+      // Eğer kutu daha önce çizilmediyse elle çizdiriyoruz
+      if (!el.hasChildNodes()) {
+        try {
+          hcaptcha.render(el, {
+            sitekey: el.getAttribute("data-sitekey")
+          });
+        } catch (e) {}
+      }
+    });
+  }, 100);
+}
   }
 
   function updateNavState() {
