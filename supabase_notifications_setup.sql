@@ -1,6 +1,15 @@
 -- ==============================================================================
--- SnipHub Notifications & Upvotes Tables & Realtime Setup
+-- SnipHub Notifications, Upvotes & Snippets Realtime Setup
 -- ==============================================================================
+
+-- 0. Snippets Table UPDATE Policy (Begenilerin ve kopyalama sayisinin guncellenebilmesi icin)
+ALTER TABLE IF EXISTS public.snippets REPLICA IDENTITY FULL;
+
+DROP POLICY IF EXISTS "Herkes snippet begeni guncelleyebilir" ON public.snippets;
+CREATE POLICY "Herkes snippet begeni guncelleyebilir"
+ON public.snippets FOR UPDATE
+USING (true)
+WITH CHECK (true);
 
 -- 1. Notifications Table
 CREATE TABLE IF NOT EXISTS public.notifications (

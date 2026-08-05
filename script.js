@@ -3049,116 +3049,176 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
+  function handleSnippetRealtimeEvent(payload) {
+    if (!payload) return;
+    var eventType = payload.eventType || payload.event;
+    var updated = payload.new;
+    var deleted = payload.old;
+
+    if (eventType === "UPDATE" && updated && updated.id) {
+      addLog("Bulut veritabaninda kod parcacigi guncellendi (snippets: " + (updated.title || updated.id) + ")");
+
+      var targetId = String(updated.id);
+      var idx = cachedSnippets.findIndex(function (s) { return String(s.id) === targetId; });
+      if (idx !== -1) {
+        cachedSnippets[idx] = Object.assign({}, cachedSnippets[idx], updated);
+      } else if (updated.is_public !== false) {
+        cachedSnippets.unshift(updated);
+      }
+
+      var nextUpvotes = (typeof updated.upvotes === "number") ? updated.upvotes : 0;
+      var nextCopies = (typeof updated.copy_count === "number") ? updated.copy_count : 0;
+
+      var upvoteBtns = document.querySelectorAll('.snippet-upvote-btn[data-snippet-id="' + targetId + '"]');
+      upvoteBtns.forEach(function (btn) {
+        var numEl = btn.querySelector(".upvote-num");
+        if (numEl) {
+          numEl.innerText = nextUpvotes;
+        }
+        var card = btn.closest(".snippet-card");
+        if (card) {
+          var isTrend = (nextUpvotes + nextCopies) >= 5;
+          var existingBadge = card.querySelector(".badge-trending");
+          if (isTrend && !existingBadge) {
+            var infoEl = card.querySelector(".snippet-card-info");
+            if (infoEl) {
+              var trendSpan = document.createElement("span");
+              trendSpan.className = "badge-trending";
+              trendSpan.innerHTML = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend';
+              infoEl.appendChild(trendSpan);
+            }
+          } else if (!isTrend && existingBadge) {
+            existingBadge.remove();
+          }
+        }
+      });
+
+      var copyEls = document.querySelectorAll('[data-copy-count-id="' + targetId + '"]');
+      copyEls.forEach(function (cEl) {
+        if (nextCopies > 0) {
+          cEl.innerText = nextCopies + " kez kopyalandi";
+          cEl.style.display = "";
+        } else {
+          cEl.style.display = "none";
+        }
+      });
+
+      if (currentRandomSnippet && String(currentRandomSnippet.id) === targetId) {
+        currentRandomSnippet = Object.assign({}, currentRandomSnippet, updated);
+      }
+    } else if (eventType === "INSERT" && updated && updated.id) {
+      var exists = cachedSnippets.some(function (s) { return String(s.id) === String(updated.id); });
+      if (!exists && updated.is_public !== false) {
+        cachedSnippets.unshift(updated);
+        renderSnippetsFeed(cachedSnippets);
+        updateSnippetCount();
+      }
+      if (!currentUser || String(updated.user_id) !== String(currentUser.id)) {
+        addNotificationItem({
+          type: "new_snippet",
+          snippet_id: updated.id,
+          snippet_title: updated.title || "Yeni kod",
+          actor_name: "Topluluk",
+          message: (updated.title || "Yeni kod") + " paylasildi",
+          created_at: updated.created_at || new Date().toISOString(),
+          is_read: false
+        });
+      }
+    } else if (eventType === "DELETE" && deleted && deleted.id) {
+      var delId = String(deleted.id);
+      cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== delId; });
+      renderSnippetsFeed(cachedSnippets);
+      updateSnippetCount();
+    }
+  }
+
   function setupRealtimeListener() {
     var client = getSupabaseClient();
-    if (client && !realtimeChannel) {
-      try {
-        realtimeChannel = client
-          .channel("realtime-users-channel")
-          .on("postgres_changes", { event: "*", schema: "public", table: "users" }, function () {
-            addLog("Bulut veritabaninda anlik degisiklik algilandi (users)");
-            refreshDashboardData();
-          })
-          .subscribe();
-      } catch (e) {}
-    }
+    if (!client) return;
 
-    if (client && !snippetsRealtimeChannel) {
+    if (!snippetsRealtimeChannel) {
       try {
         snippetsRealtimeChannel = client
           .channel("realtime-snippets-channel")
-          .on("postgres_changes", { event: "*", schema: "public", table: "snippets" }, function (payload) {
-            addLog("Bulut veritabaninda anlik degisiklik algilandi (snippets)");
-
-            if (payload && payload.eventType === "UPDATE" && payload.new) {
-              var updated = payload.new;
-              var idx = cachedSnippets.findIndex(function (s) { return String(s.id) === String(updated.id); });
-              if (idx !== -1) {
-                cachedSnippets[idx].upvotes = updated.upvotes;
-                cachedSnippets[idx].copy_count = updated.copy_count;
-                if (updated.title) cachedSnippets[idx].title = updated.title;
-              }
-
-              var upvoteNums = document.querySelectorAll('.snippet-upvote-btn[data-snippet-id="' + updated.id + '"] .upvote-num');
-              upvoteNums.forEach(function (numEl) {
-                numEl.innerText = (typeof updated.upvotes === "number") ? updated.upvotes : 0;
-              });
-
-              var copyEls = document.querySelectorAll('[data-copy-count-id="' + updated.id + '"]');
-              copyEls.forEach(function (cEl) {
-                var c = (typeof updated.copy_count === "number") ? updated.copy_count : 0;
-                if (c > 0) {
-                  cEl.innerText = c + " kez kopyalandi";
-                  cEl.style.display = "";
-                } else {
-                  cEl.style.display = "none";
-                }
-              });
-            } else if (payload && payload.eventType === "INSERT" && payload.new) {
-              var newSnip = payload.new;
-              if (!currentUser || String(newSnip.user_id) !== String(currentUser.id)) {
-                addNotificationItem({
-                  type: "new_snippet",
-                  snippet_id: newSnip.id,
-                  snippet_title: newSnip.title || "Yeni kod",
-                  actor_name: "Topluluk",
-                  message: (newSnip.title || "Yeni kod") + " paylasildi",
-                  created_at: newSnip.created_at || new Date().toISOString(),
-                  is_read: false
-                });
-              }
-              fetchPublicSnippets().then(function () {
-                renderSnippetsFeed(cachedSnippets);
-                updateSnippetCount();
-              });
-            } else if (payload && payload.eventType === "DELETE" && payload.old) {
-              var delId = payload.old.id;
-              cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== String(delId); });
-              renderSnippetsFeed(cachedSnippets);
-              updateSnippetCount();
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "snippets" },
+            function (payload) {
+              handleSnippetRealtimeEvent(payload);
             }
-          })
+          )
+          .subscribe(function (status, err) {
+            if (status === "SUBSCRIBED") {
+              addLog("Realtime: Snippets tablosu canli dinleniyor");
+            } else if (err) {
+              console.error("Snippets realtime subscription hatasi:", err);
+            }
+          });
+      } catch (e) {
+        console.error("snippetsRealtimeChannel setup error:", e);
+      }
+    }
+
+    if (!realtimeChannel) {
+      try {
+        realtimeChannel = client
+          .channel("realtime-users-channel")
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "users" },
+            function () {
+              addLog("Bulut veritabaninda anlik degisiklik algilandi (users)");
+              refreshDashboardData();
+            }
+          )
           .subscribe();
       } catch (e) {}
     }
 
-    if (client && !upvotesRealtimeChannel) {
+    if (!upvotesRealtimeChannel) {
       try {
         upvotesRealtimeChannel = client
           .channel("realtime-upvotes-channel")
-          .on("postgres_changes", { event: "*", schema: "public", table: "upvotes" }, async function (payload) {
-            addLog("Bulut veritabaninda anlik begeni degisikligi algilandi (upvotes)");
-            var targetSnippetId = (payload && payload.new && payload.new.snippet_id) || (payload && payload.old && payload.old.snippet_id);
-            if (targetSnippetId) {
-              try {
-                var sRes = await client.from("snippets").select("upvotes").eq("id", targetSnippetId).maybeSingle();
-                if (sRes && sRes.data && typeof sRes.data.upvotes === "number") {
-                  var vCount = sRes.data.upvotes;
-                  var sIdx = cachedSnippets.findIndex(function (s) { return String(s.id) === String(targetSnippetId); });
-                  if (sIdx !== -1) cachedSnippets[sIdx].upvotes = vCount;
-                  var numEls = document.querySelectorAll('.snippet-upvote-btn[data-snippet-id="' + targetSnippetId + '"] .upvote-num');
-                  numEls.forEach(function (el) { el.innerText = vCount; });
-                }
-              } catch (e) {}
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "upvotes" },
+            async function (payload) {
+              addLog("Bulut veritabaninda anlik begeni degisikligi algilandi (upvotes)");
+              var targetSnippetId = (payload && payload.new && payload.new.snippet_id) || (payload && payload.old && payload.old.snippet_id);
+              if (targetSnippetId) {
+                try {
+                  var sRes = await client.from("snippets").select("id, upvotes, copy_count").eq("id", targetSnippetId).maybeSingle();
+                  if (sRes && sRes.data) {
+                    handleSnippetRealtimeEvent({
+                      eventType: "UPDATE",
+                      new: sRes.data
+                    });
+                  }
+                } catch (e) {}
+              }
             }
-          })
+          )
           .subscribe();
       } catch (e) {}
     }
 
-    if (client && !notifsRealtimeChannel) {
+    if (!notifsRealtimeChannel) {
       try {
         notifsRealtimeChannel = client
           .channel("realtime-notifications-channel")
-          .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, function (payload) {
-            if (payload && payload.new) {
-              var notif = payload.new;
-              if (!notif.user_id || (currentUser && String(notif.user_id) === String(currentUser.id))) {
-                addNotificationItem(notif);
-                showToast(notif.message || "Yeni bir bildiriminiz var");
+          .on(
+            "postgres_changes",
+            { event: "INSERT", schema: "public", table: "notifications" },
+            function (payload) {
+              if (payload && payload.new) {
+                var notif = payload.new;
+                if (!notif.user_id || (currentUser && String(notif.user_id) === String(currentUser.id))) {
+                  addNotificationItem(notif);
+                  showToast(notif.message || "Yeni bir bildiriminiz var");
+                }
               }
             }
-          })
+          )
           .subscribe();
       } catch (e) {}
     }
@@ -3457,5 +3517,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
+  setupRealtimeListener();
   checkInitialSession();
 });
+
