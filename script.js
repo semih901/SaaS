@@ -23,12 +23,14 @@ document.addEventListener("DOMContentLoaded", function () {
   var currentUser = null;
   var cachedUsers = [];
   var cachedSnippets = [];
+  var cachedNotifications = [];
   var systemLogs = [];
   var editingSnippetId = null;
   var metricsInterval = null;
   var autoSyncInterval = null;
   var realtimeChannel = null;
   var snippetsRealtimeChannel = null;
+  var notifsRealtimeChannel = null;
   var activeExpertiseFilter = "all";
   var isRefreshingData = false;
 
@@ -46,6 +48,9 @@ document.addEventListener("DOMContentLoaded", function () {
   function isAdmin(userOrRole) {
     return isUserAdmin(userOrRole);
   }
+
+  window.isUserAdmin = isUserAdmin;
+  window.isAdmin = isAdmin;
 
   function getFriendlyAuthErrorMessage(err) {
     if (!err) return "Bir hata olustu. Lutfen tekrar deneyin.";
@@ -510,6 +515,43 @@ document.addEventListener("DOMContentLoaded", function () {
       await cloudSignOut();
       addLog("Oturum kapatildi");
       showView("landing");
+    });
+  }
+
+  var notifTriggerBtn = document.getElementById("notif-trigger-btn");
+  var notifDropdownMenu = document.getElementById("notif-dropdown-menu");
+  var notifClearBtn = document.getElementById("notif-clear-btn");
+
+  if (notifTriggerBtn && notifDropdownMenu) {
+    notifTriggerBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (navDropdownMenu) {
+        navDropdownMenu.classList.remove("show");
+        if (navUserTrigger) navUserTrigger.classList.remove("active");
+      }
+      var isShown = notifDropdownMenu.classList.contains("show") || notifDropdownMenu.classList.contains("active");
+      if (isShown) {
+        notifDropdownMenu.classList.remove("show", "active");
+        notifTriggerBtn.classList.remove("active");
+      } else {
+        notifDropdownMenu.classList.add("show", "active");
+        notifTriggerBtn.classList.add("active");
+      }
+    });
+
+    document.addEventListener("click", function (e) {
+      if (!notifTriggerBtn.contains(e.target) && !notifDropdownMenu.contains(e.target)) {
+        notifDropdownMenu.classList.remove("show", "active");
+        notifTriggerBtn.classList.remove("active");
+      }
+    });
+  }
+
+  if (notifClearBtn) {
+    notifClearBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      markAllNotificationsAsRead();
     });
   }
 
@@ -1110,6 +1152,228 @@ document.addEventListener("DOMContentLoaded", function () {
     }, 2800);
   }
 
+  function getNotifStorageKey() {
+    var uid = (currentUser && currentUser.id) ? currentUser.id : "guest";
+    return "sniphub_notifications_" + uid;
+  }
+
+  function loadStoredNotifications() {
+    try {
+      var raw = localStorage.getItem(getNotifStorageKey());
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveStoredNotifications(notifs) {
+    try {
+      localStorage.setItem(getNotifStorageKey(), JSON.stringify(notifs.slice(0, 50)));
+    } catch (e) {}
+  }
+
+  function formatRelativeTime(dateStr) {
+    if (!dateStr) return "az once";
+    var d = new Date(dateStr);
+    if (isNaN(d.getTime())) return "az once";
+    var now = new Date();
+    var diffMs = Math.max(0, now.getTime() - d.getTime());
+    var diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 60) return "az once";
+    var diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return diffMin + " dk once";
+    var diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return diffHours + " saat once";
+    var diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) return diffDays + " gun once";
+    return d.toLocaleDateString("tr-TR", { day: "numeric", month: "short" });
+  }
+
+  async function fetchNotifications() {
+    var client = getSupabaseClient();
+    var localNotifs = loadStoredNotifications();
+
+    if (client && currentUser && currentUser.id && currentUser.id !== "guest-session") {
+      try {
+        var res = await client
+          .from("notifications")
+          .select("*")
+          .or("user_id.eq." + currentUser.id + ",user_id.is.null")
+          .order("created_at", { ascending: false })
+          .limit(30);
+
+        if (res && res.data && Array.isArray(res.data) && res.data.length > 0) {
+          var map = {};
+          res.data.forEach(function (n) { map[n.id] = n; });
+          localNotifs.forEach(function (n) {
+            if (!map[n.id]) map[n.id] = n;
+          });
+          var combined = Object.values(map);
+          combined.sort(function (a, b) {
+            return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+          });
+          cachedNotifications = combined.slice(0, 50);
+          saveStoredNotifications(cachedNotifications);
+          renderNotificationDropdown();
+          return cachedNotifications;
+        }
+      } catch (e) {}
+    }
+
+    cachedNotifications = localNotifs;
+    renderNotificationDropdown();
+    return cachedNotifications;
+  }
+
+  function addNotificationItem(notif) {
+    if (!notif) return;
+    if (!notif.id) {
+      notif.id = "notif_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
+    }
+    if (!notif.created_at) {
+      notif.created_at = new Date().toISOString();
+    }
+    if (typeof notif.is_read === "undefined") {
+      notif.is_read = false;
+    }
+
+    var exists = cachedNotifications.some(function (n) { return String(n.id) === String(notif.id); });
+    if (!exists) {
+      cachedNotifications.unshift(notif);
+      if (cachedNotifications.length > 50) cachedNotifications.pop();
+      saveStoredNotifications(cachedNotifications);
+      renderNotificationDropdown();
+    }
+  }
+
+  async function sendNotification(notifData) {
+    if (!notifData) return;
+    var client = getSupabaseClient();
+    var payload = {
+      user_id: notifData.user_id || null,
+      actor_name: notifData.actor_name || (currentUser ? currentUser.username : "Bir gelistirici"),
+      snippet_id: notifData.snippet_id || null,
+      snippet_title: notifData.snippet_title || "",
+      type: notifData.type || "general",
+      message: notifData.message || "",
+      is_read: false,
+      created_at: new Date().toISOString()
+    };
+
+    if (client) {
+      try {
+        await client.from("notifications").insert([payload]);
+      } catch (e) {}
+    }
+  }
+
+  async function markNotificationAsRead(notifId) {
+    var notif = cachedNotifications.find(function (n) { return String(n.id) === String(notifId); });
+    if (notif) {
+      notif.is_read = true;
+      saveStoredNotifications(cachedNotifications);
+      renderNotificationDropdown();
+    }
+
+    var client = getSupabaseClient();
+    if (client && notifId && currentUser && currentUser.id && currentUser.id !== "guest-session") {
+      try {
+        await client.from("notifications").update({ is_read: true }).eq("id", notifId);
+      } catch (e) {}
+    }
+  }
+
+  async function markAllNotificationsAsRead() {
+    cachedNotifications.forEach(function (n) { n.is_read = true; });
+    saveStoredNotifications(cachedNotifications);
+    renderNotificationDropdown();
+
+    var client = getSupabaseClient();
+    if (client && currentUser && currentUser.id && currentUser.id !== "guest-session") {
+      try {
+        await client.from("notifications").update({ is_read: true }).eq("user_id", currentUser.id);
+      } catch (e) {}
+    }
+    showToast("Tum bildirimler okundu");
+  }
+
+  function renderNotificationDropdown() {
+    var badge = document.getElementById("notif-badge");
+    var list = document.getElementById("notif-list");
+    var emptyEl = document.getElementById("notif-empty");
+
+    var unreadCount = cachedNotifications.filter(function (n) { return !n.is_read; }).length;
+
+    if (badge) {
+      if (unreadCount > 0) {
+        badge.style.display = "block";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+
+    if (!list) return;
+    list.innerHTML = "";
+
+    if (cachedNotifications.length === 0) {
+      if (emptyEl) emptyEl.style.display = "block";
+      return;
+    }
+
+    if (emptyEl) emptyEl.style.display = "none";
+
+    cachedNotifications.forEach(function (notif) {
+      var item = document.createElement("div");
+      item.className = "notif-item" + (notif.is_read ? "" : " unread");
+
+      var iconSvg = "";
+      if (notif.type === "like") {
+        iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>';
+      } else {
+        iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>';
+      }
+
+      var textHtml = "";
+      if (notif.type === "like") {
+        textHtml = '<strong>' + escapeHtml(notif.actor_name || "Bir kullanici") + '</strong> gonderinizi begendi';
+        if (notif.snippet_title) {
+          textHtml += ': <span style="color:#a1a1aa">"' + escapeHtml(notif.snippet_title) + '"</span>';
+        }
+      } else if (notif.type === "new_snippet") {
+        textHtml = '<strong>' + escapeHtml(notif.snippet_title || "Yeni kod") + '</strong> paylasildi';
+      } else {
+        textHtml = escapeHtml(notif.message || "Yeni bildirim");
+      }
+
+      var timeHtml = formatRelativeTime(notif.created_at);
+
+      item.innerHTML =
+        '<div class="notif-item-icon">' + iconSvg + '</div>' +
+        '<div class="notif-item-body">' +
+          '<div class="notif-item-text">' + textHtml + '</div>' +
+          '<div class="notif-item-time">' + timeHtml + '</div>' +
+        '</div>';
+
+      item.addEventListener("click", function () {
+        markNotificationAsRead(notif.id);
+        if (notif.snippet_id) {
+          switchDashboardTab("tab-snippets");
+          setTimeout(function () {
+            var targetEl = document.querySelector('.snippet-upvote-btn[data-snippet-id="' + notif.snippet_id + '"]');
+            if (targetEl) {
+              var cardEl = targetEl.closest(".snippet-card") || targetEl;
+              cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+              cardEl.style.outline = "2px solid #3b82f6";
+              setTimeout(function () { cardEl.style.outline = ""; }, 2500);
+            }
+          }, 300);
+        }
+      });
+
+      list.appendChild(item);
+    });
+  }
+
   function getVotedKey() {
     return currentUser ? "sniphub_voted_" + (currentUser.id || currentUser.email) : "sniphub_voted_guest";
   }
@@ -1355,6 +1619,17 @@ document.addEventListener("DOMContentLoaded", function () {
             if (numEl2) numEl2.innerText = snipObj.upvotes;
             incrementUpvote(snipId);
             showToast("Begeni kaydedildi");
+
+            if (authorUserId && currentUser && String(authorUserId) !== String(currentUser.id)) {
+              sendNotification({
+                user_id: authorUserId,
+                type: "like",
+                actor_name: currentUser.username || (currentUser.email ? currentUser.email.split("@")[0] : "Bir kullanici"),
+                snippet_id: snipObj.id,
+                snippet_title: snipObj.title || "Kod parcacigi",
+                message: (currentUser.username || "Bir kullanici") + " gonderinizi begendi"
+              });
+            }
           }
         });
       })(upvoteBtn, snippet.id, snippet);
@@ -2731,6 +3006,7 @@ document.addEventListener("DOMContentLoaded", function () {
       await fetchPublicSnippets();
       await updateSnippetCount();
       renderSnippetsFeed(cachedSnippets);
+      await fetchNotifications();
     } catch (err) {
       addLog("Bulut veri senkronizasyon uyarisi: " + (err.message || err));
     } finally {
@@ -2751,16 +3027,78 @@ document.addEventListener("DOMContentLoaded", function () {
           .subscribe();
       } catch (e) {}
     }
+
     if (client && !snippetsRealtimeChannel) {
       try {
         snippetsRealtimeChannel = client
-          .channel("custom-all-channel")
-          .on("postgres_changes", { event: "*", schema: "public", table: "snippets" }, function () {
+          .channel("realtime-snippets-channel")
+          .on("postgres_changes", { event: "*", schema: "public", table: "snippets" }, function (payload) {
             addLog("Bulut veritabaninda anlik degisiklik algilandi (snippets)");
-            fetchPublicSnippets().then(function () {
+
+            if (payload && payload.eventType === "UPDATE" && payload.new) {
+              var updated = payload.new;
+              var idx = cachedSnippets.findIndex(function (s) { return String(s.id) === String(updated.id); });
+              if (idx !== -1) {
+                cachedSnippets[idx].upvotes = updated.upvotes;
+                cachedSnippets[idx].copy_count = updated.copy_count;
+                if (updated.title) cachedSnippets[idx].title = updated.title;
+              }
+
+              var upvoteNums = document.querySelectorAll('.snippet-upvote-btn[data-snippet-id="' + updated.id + '"] .upvote-num');
+              upvoteNums.forEach(function (numEl) {
+                numEl.innerText = (typeof updated.upvotes === "number") ? updated.upvotes : 0;
+              });
+
+              var copyEls = document.querySelectorAll('[data-copy-count-id="' + updated.id + '"]');
+              copyEls.forEach(function (cEl) {
+                var c = (typeof updated.copy_count === "number") ? updated.copy_count : 0;
+                if (c > 0) {
+                  cEl.innerText = c + " kez kopyalandi";
+                  cEl.style.display = "";
+                } else {
+                  cEl.style.display = "none";
+                }
+              });
+            } else if (payload && payload.eventType === "INSERT" && payload.new) {
+              var newSnip = payload.new;
+              if (!currentUser || String(newSnip.user_id) !== String(currentUser.id)) {
+                addNotificationItem({
+                  type: "new_snippet",
+                  snippet_id: newSnip.id,
+                  snippet_title: newSnip.title || "Yeni kod",
+                  actor_name: "Topluluk",
+                  message: (newSnip.title || "Yeni kod") + " paylasildi",
+                  created_at: newSnip.created_at || new Date().toISOString(),
+                  is_read: false
+                });
+              }
+              fetchPublicSnippets().then(function () {
+                renderSnippetsFeed(cachedSnippets);
+                updateSnippetCount();
+              });
+            } else if (payload && payload.eventType === "DELETE" && payload.old) {
+              var delId = payload.old.id;
+              cachedSnippets = cachedSnippets.filter(function (s) { return String(s.id) !== String(delId); });
               renderSnippetsFeed(cachedSnippets);
               updateSnippetCount();
-            });
+            }
+          })
+          .subscribe();
+      } catch (e) {}
+    }
+
+    if (client && !notifsRealtimeChannel) {
+      try {
+        notifsRealtimeChannel = client
+          .channel("realtime-notifications-channel")
+          .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, function (payload) {
+            if (payload && payload.new) {
+              var notif = payload.new;
+              if (!notif.user_id || (currentUser && String(notif.user_id) === String(currentUser.id))) {
+                addNotificationItem(notif);
+                showToast(notif.message || "Yeni bir bildiriminiz var");
+              }
+            }
           })
           .subscribe();
       } catch (e) {}
