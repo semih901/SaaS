@@ -32,7 +32,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var activeExpertiseFilter = "all";
   var isRefreshingData = false;
 
-  function isAdmin(userOrRole) {
+  function isUserAdmin(userOrRole) {
     if (!userOrRole) return false;
     if (typeof userOrRole === "string") {
       return userOrRole.toLowerCase() === "admin";
@@ -41,6 +41,10 @@ document.addEventListener("DOMContentLoaded", function () {
       return userOrRole.role === "admin";
     }
     return false;
+  }
+
+  function isAdmin(userOrRole) {
+    return isUserAdmin(userOrRole);
   }
 
   function getFriendlyAuthErrorMessage(err) {
@@ -877,41 +881,61 @@ document.addEventListener("DOMContentLoaded", function () {
       return cachedSnippets || [];
     }
     var t0 = performance.now();
-    var res = await client
-      .from("snippets")
-      .select("*, users:user_id(id, username, avatar_url, bio)")
-      .eq("is_public", true)
-      .order("created_at", { ascending: false });
+    var res = null;
 
-    if (res.error) {
+    try {
       res = await client
         .from("snippets")
-        .select("*, users(id, username, avatar_url, bio)")
-        .eq("is_public", true)
+        .select("*, users:user_id(id, username, avatar_url, bio)")
         .order("created_at", { ascending: false });
+    } catch (e) {}
+
+    if (!res || res.error) {
+      try {
+        res = await client
+          .from("snippets")
+          .select("*, profiles:user_id(id, username, full_name, avatar_url, bio)")
+          .order("created_at", { ascending: false });
+      } catch (e) {}
     }
-    if (res.error) {
-      res = await client
-        .from("snippets")
-        .select("*, profiles:user_id(id, username, full_name, avatar_url, bio)")
-        .eq("is_public", true)
-        .order("created_at", { ascending: false });
+
+    if (!res || res.error) {
+      try {
+        res = await client
+          .from("snippets")
+          .select("*")
+          .order("created_at", { ascending: false });
+      } catch (e) {}
     }
-    if (res.error) {
-      res = await client
-        .from("snippets")
-        .select("*")
-        .eq("is_public", true)
-        .order("created_at", { ascending: false });
+
+    if (!res || res.error) {
+      try {
+        res = await client
+          .from("snippets")
+          .select("*");
+      } catch (e) {}
     }
+
     var t1 = performance.now();
     setMetricApi(Math.max(12, Math.round(t1 - t0)));
 
-    if (res.error) {
-      addLog("Snippet veri cekme uyarisi: " + (res.error.message || JSON.stringify(res.error)));
+    if (!res || res.error) {
+      addLog("Snippet veri cekme uyarisi: " + ((res && res.error && (res.error.message || JSON.stringify(res.error))) || "Sorgu basarisiz"));
       return cachedSnippets || [];
     }
+
     var data = res.data || [];
+
+    data = data.filter(function (s) {
+      if (s.is_public === false || s.public === false) {
+        if (currentUser && (String(s.user_id) === String(currentUser.id) || isUserAdmin(currentUser))) {
+          return true;
+        }
+        return false;
+      }
+      return true;
+    });
+
     cachedSnippets = data;
     return data;
   }
