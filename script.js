@@ -5,6 +5,15 @@ const SUPABASE_CONFIG = {
 
 const ADMIN_EMAIL = "semihcifci100@gmail.com";
 
+async function signInWithGitHub() {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'github',
+    options: {
+      redirectTo: 'https://siteniz.com'
+    }
+  })
+}
+
 document.addEventListener("DOMContentLoaded", function () {
   var sbClient = null;
 
