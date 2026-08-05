@@ -7,7 +7,7 @@
   <meta name="description" content="NEXUS ile bulut veri tabanınızı ve kullanıcılarınızı güvenle, gerçek zamanlı olarak yönetin.">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://js.hcaptcha.com/1/api.js?render=explicit" async defer></script>
+  <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
 </head>
 <body>
 
@@ -236,7 +236,9 @@
                 </button>
               </div>
             </div>
-            <div class="h-captcha" data-sitekey="5456f2aa-77b4-4204-be64-2bc8e138c70a"></div>
+            <div class="captcha-wrapper" style="display:flex; justify-content:center; margin-bottom:18px;">
+              <div class="h-captcha" data-sitekey="5456f2aa-77b4-4204-be64-2bc8e138c70a"></div>
+            </div>
             <button type="submit" class="auth-btn" id="login-submit-btn">Giriş Yap</button>
           </form>
         </div>
@@ -272,6 +274,9 @@
                   <svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
                 </button>
               </div>
+            </div>
+            <div class="captcha-wrapper" style="display:flex; justify-content:center; margin-bottom:18px;">
+              <div class="h-captcha" data-sitekey="5456f2aa-77b4-4204-be64-2bc8e138c70a"></div>
             </div>
             <button type="submit" class="auth-btn" id="register-submit-btn">Kayıt Ol</button>
           </form>
@@ -438,6 +443,10 @@
                 <input type="text" class="db-search" id="db-search" placeholder="Veri Tabanında Ara...">
               </div>
               <div class="db-toolbar-actions">
+                <button class="db-action-btn" id="db-copy-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  JSON'ı Kopyala
+                </button>
                 <button class="db-action-btn" id="db-export-btn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                   Veriyi Dışarı Aktar (.json)
@@ -450,10 +459,13 @@
             </div>
             <div class="db-terminal">
               <div class="db-terminal-bar">
-                <span class="db-dot db-dot-red"></span>
-                <span class="db-dot db-dot-yellow"></span>
-                <span class="db-dot db-dot-green"></span>
-                <span class="db-terminal-title">nexus_cloud_db — public.users.json</span>
+                <div class="db-terminal-bar-left">
+                  <span class="db-dot db-dot-red"></span>
+                  <span class="db-dot db-dot-yellow"></span>
+                  <span class="db-dot db-dot-green"></span>
+                  <span class="db-terminal-title">nexus_cloud_db — public.users.json</span>
+                </div>
+                <span class="db-terminal-badge" id="db-terminal-count">0 kayıt</span>
               </div>
               <pre class="db-code"><code id="db-output">[]</code></pre>
             </div>

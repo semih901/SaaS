@@ -42,6 +42,44 @@ document.addEventListener("DOMContentLoaded", function () {
            String(d.getSeconds()).padStart(2, "0");
   }
 
+  function formatReadableDate(isoString) {
+    if (!isoString) return "";
+    try {
+      var d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      var year = d.getFullYear();
+      var month = String(d.getMonth() + 1).padStart(2, "0");
+      var day = String(d.getDate()).padStart(2, "0");
+      var hours = String(d.getHours()).padStart(2, "0");
+      var minutes = String(d.getMinutes()).padStart(2, "0");
+      var seconds = String(d.getSeconds()).padStart(2, "0");
+      return year + "-" + month + "-" + day + " " + hours + ":" + minutes + ":" + seconds;
+    } catch (e) {
+      return isoString;
+    }
+  }
+
+  function highlightJsonSyntax(jsonStr) {
+    if (!jsonStr) return "";
+    var escaped = jsonStr.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return escaped.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+      var cls = "json-number";
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) {
+          cls = "json-key";
+          return '<span class="' + cls + '">' + match.slice(0, -1) + '</span><span class="json-punctuation">:</span>';
+        } else {
+          cls = "json-string";
+        }
+      } else if (/true|false/.test(match)) {
+        cls = "json-boolean";
+      } else if (/null/.test(match)) {
+        cls = "json-null";
+      }
+      return '<span class="' + cls + '">' + match + '</span>';
+    });
+  }
+
   function addLog(msg) {
     systemLogs.push({ time: ts(), message: msg });
     if (systemLogs.length > 80) systemLogs.shift();
@@ -164,21 +202,19 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     }
 
-    // showView fonksiyonunun en altına ekle:
-if (typeof hcaptcha !== "undefined") {
-  setTimeout(function () {
-    document.querySelectorAll(".h-captcha").forEach(function (el) {
-      // Eğer kutu daha önce çizilmediyse elle çizdiriyoruz
-      if (!el.hasChildNodes()) {
-        try {
-          hcaptcha.render(el, {
-            sitekey: el.getAttribute("data-sitekey")
-          });
-        } catch (e) {}
-      }
-    });
-  }, 100);
-}
+    if (typeof hcaptcha !== "undefined") {
+      setTimeout(function () {
+        document.querySelectorAll(".h-captcha").forEach(function (el) {
+          if (!el.hasChildNodes()) {
+            try {
+              hcaptcha.render(el, {
+                sitekey: el.getAttribute("data-sitekey")
+              });
+            } catch (e) {}
+          }
+        });
+      }, 100);
+    }
   }
 
   function updateNavState() {
@@ -647,11 +683,13 @@ if (typeof hcaptcha !== "undefined") {
 
   function renderDatabaseView(users) {
     var output = document.getElementById("db-output");
+    var countBadge = document.getElementById("db-terminal-count");
     if (!output) return;
 
     var isUserAdmin = currentUser && isAdmin(currentUser.email);
     if (!isUserAdmin) {
-      output.innerText = "[]";
+      output.innerHTML = highlightJsonSyntax("[]");
+      if (countBadge) countBadge.innerText = "0 kayıt";
       return;
     }
 
@@ -672,16 +710,92 @@ if (typeof hcaptcha !== "undefined") {
     var cleanList = list.map(function (item) {
       var copy = Object.assign({}, item);
       delete copy.password;
+      if (copy.created_at) {
+        copy.created_at = formatReadableDate(copy.created_at);
+      }
       return copy;
     });
 
-    output.innerText = JSON.stringify(cleanList, null, 2);
+    if (countBadge) {
+      countBadge.innerText = cleanList.length + " kayıt";
+    }
+
+    var jsonString = JSON.stringify(cleanList, null, 2);
+    output.innerHTML = highlightJsonSyntax(jsonString);
   }
 
   var dbSearch = document.getElementById("db-search");
   if (dbSearch) {
     dbSearch.addEventListener("input", function () {
       renderDatabaseView();
+    });
+  }
+
+  function copyTextToClipboard(text, onSuccess) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () {
+        if (onSuccess) onSuccess();
+      }).catch(function () {
+        fallbackCopy(text);
+        if (onSuccess) onSuccess();
+      });
+    } else {
+      fallbackCopy(text);
+      if (onSuccess) onSuccess();
+    }
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  var dbCopyBtn = document.getElementById("db-copy-btn");
+  if (dbCopyBtn) {
+    dbCopyBtn.addEventListener("click", function () {
+      var isUserAdmin = currentUser && isAdmin(currentUser.email);
+      var dataList = isUserAdmin ? (cachedUsers || []) : [];
+      var search = document.getElementById("db-search");
+      var q = search ? search.value.trim().toLowerCase() : "";
+
+      var list = dataList.slice();
+      if (q) {
+        list = list.filter(function (u) {
+          var un = (u.username || "").toLowerCase();
+          var em = (u.email || "").toLowerCase();
+          return un.indexOf(q) !== -1 || em.indexOf(q) !== -1;
+        });
+      }
+
+      var cleanList = list.map(function (item) {
+        var copy = Object.assign({}, item);
+        delete copy.password;
+        if (copy.created_at) {
+          copy.created_at = formatReadableDate(copy.created_at);
+        }
+        return copy;
+      });
+
+      var rawJson = JSON.stringify(cleanList, null, 2);
+      var originalHtml = dbCopyBtn.innerHTML;
+
+      copyTextToClipboard(rawJson, function () {
+        dbCopyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Kopyalandı';
+        addLog("Terminal JSON içeriği panoya kopyalandı (" + cleanList.length + " kayıt)");
+        setTimeout(function () {
+          dbCopyBtn.innerHTML = originalHtml;
+        }, 2000);
+      });
     });
   }
 
@@ -776,6 +890,9 @@ if (typeof hcaptcha !== "undefined") {
       var exportData = cachedUsers.map(function (u) {
         var copy = Object.assign({}, u);
         delete copy.password;
+        if (copy.created_at) {
+          copy.created_at = formatReadableDate(copy.created_at);
+        }
         return copy;
       });
       var blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
