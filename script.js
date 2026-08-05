@@ -1444,38 +1444,72 @@ document.addEventListener("DOMContentLoaded", function () {
     showView("landing");
   }
 
-  async function signInWithGitHub() {
+  async function handleGitHubAuth(btnElement) {
+    if (typeof addLog === "function") addLog("GitHub ile giris islemi baslatiliyor...");
+
     var client = getSupabaseClient();
     if (!client) {
+      if (typeof addLog === "function") addLog("Hata: Supabase istemcisi baslatilamadi.");
       alert("Supabase baglantisi kurulamadi.");
+      if (btnElement) btnElement.disabled = false;
       return;
     }
-    var res = await client.auth.signInWithOAuth({
-      provider: "github",
-      options: {
-        redirectTo: "https://saas-theta-ochre.vercel.app"
+
+    if (btnElement) {
+      btnElement.disabled = true;
+      btnElement.innerText = "Yonlendiriliyor...";
+    }
+
+    try {
+      var redirectTarget = window.location.origin;
+      if (!redirectTarget || redirectTarget === "null" || redirectTarget.indexOf("http") !== 0) {
+        redirectTarget = "https://saas-theta-ochre.vercel.app";
       }
-    });
-    if (res.error) {
-      alert("GitHub giris hatasi: " + res.error.message);
+
+      var res = await client.auth.signInWithOAuth({
+        provider: "github",
+        options: {
+          redirectTo: redirectTarget
+        }
+      });
+
+      var data = res.data;
+      var error = res.error;
+
+      if (error) {
+        if (typeof addLog === "function") addLog("GitHub Giris Hatasi: " + error.message);
+        alert("Giris basarisiz: " + error.message);
+        if (btnElement) {
+          btnElement.disabled = false;
+          btnElement.innerText = "GitHub ile Giris Yap";
+        }
+      } else if (data && data.url) {
+        if (typeof addLog === "function") addLog("GitHub'a yonlendiriliyorsunuz...");
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      if (typeof addLog === "function") addLog("GitHub Giris Hatasi: " + (err.message || err));
+      alert("Giris basarisiz: " + (err.message || err));
+      if (btnElement) {
+        btnElement.disabled = false;
+        btnElement.innerText = "GitHub ile Giris Yap";
+      }
     }
   }
 
-  var githubLoginBtn = document.getElementById("github-login-btn");
-  if (githubLoginBtn) {
-    githubLoginBtn.addEventListener("click", function () {
-      githubLoginBtn.disabled = true;
-      githubLoginBtn.innerText = "Yonlendiriliyor...";
-      signInWithGitHub();
+  var githubBtn = document.getElementById("github-login-btn");
+  if (githubBtn) {
+    githubBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      await handleGitHubAuth(githubBtn);
     });
   }
 
   var githubRegisterBtn = document.getElementById("github-register-btn");
   if (githubRegisterBtn) {
-    githubRegisterBtn.addEventListener("click", function () {
-      githubRegisterBtn.disabled = true;
-      githubRegisterBtn.innerText = "Yonlendiriliyor...";
-      signInWithGitHub();
+    githubRegisterBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      await handleGitHubAuth(githubRegisterBtn);
     });
   }
 
